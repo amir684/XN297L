@@ -49,7 +49,14 @@ static const int PIN_MISO = 3;
 static const int PIN_MOSI = 10;
 static const int PIN_CSN  = 7;
 static const int PIN_CE   = 1;
+#ifdef BOARD_C3_SUPERMINI
+// GPIO0 is the battery divider on this board, so IRQ goes unconnected. Nothing
+// is lost: the driver polls and never reads the pin. -1 tells it to leave the
+// GPIO alone entirely, which it must, or pinMode would fight the ADC.
+static const int PIN_IRQ  = -1;
+#else
 static const int PIN_IRQ  = 0;
+#endif
 #else
 // ESP32 WROOM, hardware VSPI.
 static const int PIN_SCK  = 18;
@@ -142,7 +149,79 @@ struct LinkPacket {
                        // or RSSI_OFF if that board is not measuring
   int16_t  tempDeciC;  // sender's die temperature in tenths of a degree,
                        // or TEMP_NONE on a board without a usable sensor
+  uint16_t battMv;     // sender's battery in millivolts, or BATT_NONE
 };
+
+// ---- battery sense (initiator) ----------------------------------------------
+// A 1:2 divider from the cell to GPIO0, which is ADC1_CH0:
+//
+//   BAT+ ---[ R1 100k ]---+--- GPIO0
+//                         |
+//                         +---[ R2 100k ]--- GND
+//                         |
+//                         +---[ 100nF ]----- GND
+//
+// GPIO0 carries IRQ in the shared C3 pin map, but nothing uses it -- the driver
+// polls -- so on the initiator that pin is free and IRQ is simply left
+// unconnected. GPIO2 is the other free ADC1 channel and is deliberately NOT
+// used: it is a boot strapping pin, and a divider holding it near 2.1 V sits
+// right on the VIH threshold, so the board would fail to boot intermittently.
+//
+// The C3's ADC is only linear to about 2.5 V (unlike the original ESP32, which
+// reaches ~3.1 V), so a full 4.2 V cell has to land at 2.10 V. That is what the
+// 1:2 ratio is for, and it leaves 0.4 V of headroom.
+static const uint16_t BATT_NONE = 0;
+
+#ifdef BOARD_C3_SUPERMINI
+static const int PIN_BATT = 0;                  // ADC1_CH0
+
+// The design ratio. Change only if you change the resistors.
+static const float BATT_DIVIDER = 2.0f;
+
+// Calibration. 1% resistors and the ADC's own residual error leave a few
+// percent on the table, so trim it here:
+//
+//   1. read the cell directly with a multimeter
+//   2. read what this board reports
+//   3. BATT_CAL = multimeter / reported
+//
+// e.g. meter says 3.95 V, board says 3.87 V  ->  3.95 / 3.87 = 1.021
+static const float BATT_CAL = 1.000f;
+
+static uint16_t readBatteryMv() {
+  // The ADC is noisy enough that a single sample wanders tens of millivolts.
+  uint32_t sum = 0;
+  for (uint8_t i = 0; i < 16; i++) sum += analogReadMilliVolts(PIN_BATT);
+  float mv = (sum / 16.0f) * BATT_DIVIDER * BATT_CAL;
+  return (uint16_t)lroundf(mv);
+}
+#else
+__attribute__((unused))
+static uint16_t readBatteryMv() { return BATT_NONE; }
+#endif
+
+// Open-circuit discharge curve of a single Li-ion cell. Voltage alone is a
+// rough gauge -- it sags under load and recovers at rest -- so treat this as an
+// indication, not a fuel gauge.
+__attribute__((unused))
+static uint8_t batteryPercent(uint16_t mv) {
+  static const uint16_t curve[][2] = {
+    {4200, 100}, {4100, 90}, {4000, 80}, {3930, 70}, {3870, 60}, {3820, 50},
+    {3790, 40}, {3770, 30}, {3740, 20}, {3680, 10}, {3450, 5}, {3000, 0},
+  };
+  const uint8_t n = sizeof(curve) / sizeof(curve[0]);
+
+  if (mv >= curve[0][0]) return 100;
+  if (mv <= curve[n - 1][0]) return 0;
+  for (uint8_t i = 1; i < n; i++) {
+    if (mv >= curve[i][0]) {
+      uint16_t vHi = curve[i - 1][0], vLo = curve[i][0];
+      uint16_t pHi = curve[i - 1][1], pLo = curve[i][1];
+      return (uint8_t)(pLo + (long)(mv - vLo) * (pHi - pLo) / (vHi - vLo));
+    }
+  }
+  return 0;
+}
 
 // The ESP32-C3 has a real on-chip temperature sensor. The original ESP32 does
 // not have a usable one, so those boards say so rather than send a made-up
@@ -449,7 +528,8 @@ static void oledBegin() {
 static const int PIN_BOOT = 9;
 
 enum OledPage : uint8_t {
-  PAGE_OVERVIEW, PAGE_TEMP, PAGE_SIGNAL, PAGE_STATS, PAGE_GRAPH, PAGE_COUNT
+  PAGE_OVERVIEW, PAGE_TEMP, PAGE_BATT, PAGE_SIGNAL, PAGE_STATS, PAGE_GRAPH,
+  PAGE_COUNT
 };
 static uint8_t oledPage = PAGE_OVERVIEW;
 
@@ -462,6 +542,7 @@ static struct {
   uint8_t  mineAvg = 0;
   uint8_t  theirs = RSSI_OFF;
   int16_t  temp = TEMP_NONE;
+  uint16_t batt = BATT_NONE;
   bool     stale = true;
   uint32_t startMs = 0;
 } st;
@@ -539,6 +620,37 @@ static void pageTemp() {
   oled.setFont(u8g2_font_5x7_tf);
   oled.drawStr(x + w + 2, 22, "o");
   oled.drawStr(x + w + 2, 30, "C");
+}
+
+static void pageBattery() {
+  char line[16];
+
+  oled.setFont(u8g2_font_5x7_tf);
+  oled.drawStr(OLED_X, 7, "TX BATT");
+
+  if (st.batt == BATT_NONE) {
+    oled.setFont(u8g2_font_6x10_tf);
+    drawCentred("no sensor", 28, 6);
+    return;
+  }
+
+  uint8_t pct = batteryPercent(st.batt);
+  snprintf(line, sizeof(line), "%u%%", pct);
+  oled.drawStr(OLED_X + OLED_W - (int)strlen(line) * 5, 7, line);
+
+  snprintf(line, sizeof(line), "%.2f", st.batt / 1000.0f);
+  oled.setFont(u8g2_font_logisoso16_tn);
+  int w = oled.getStrWidth(line);
+  oled.drawStr(OLED_X, 27, line);
+  oled.setFont(u8g2_font_5x7_tf);
+  oled.drawStr(OLED_X + w + 2, 27, "V");
+
+  // Battery outline with a nub on the right, filled by charge.
+  const int bx = OLED_X, by = 31, bw = OLED_W - 3, bh = 9;
+  oled.drawFrame(bx, by, bw, bh);
+  oled.drawBox(bx + bw, by + 3, 2, 3);
+  int fill = (bw - 2) * pct / 100;
+  if (fill) oled.drawBox(bx + 1, by + 1, fill, bh - 2);
 }
 
 static void pageSignal() {
@@ -623,6 +735,7 @@ static void oledDraw() {
   oled.clearBuffer();
   switch (oledPage) {
     case PAGE_TEMP:   pageTemp();   break;
+    case PAGE_BATT:   pageBattery(); break;
     case PAGE_SIGNAL: pageSignal(); break;
     case PAGE_STATS:  pageStats();  break;
     case PAGE_GRAPH:  pageGraph();  break;
@@ -647,13 +760,15 @@ static void oledPollButton() {
 }
 
 static void oledStatus(uint32_t seen, uint16_t lost, uint8_t mine, uint8_t avg,
-                       uint8_t theirs, int16_t tempDeciC, bool stale) {
+                       uint8_t theirs, int16_t tempDeciC, uint16_t battMv,
+                       bool stale) {
   st.seen    = seen;
   st.lost    = lost;
   st.mine    = mine;
   st.mineAvg = avg;
   st.theirs  = theirs;
   st.temp    = tempDeciC;
+  st.batt    = battMv;
   st.stale   = stale;
   if (!stale) tempHistPush(tempDeciC);
   oledDraw();
@@ -757,10 +872,14 @@ void loop() {
   static uint8_t  myAvg  = 0;
 
   LinkPacket out = {};
+  // Sampled here, at the top of the loop -- the radio has been idle through the
+  // whole TX_INTERVAL_MS delay. Reading during a transmit would catch the 66 mA
+  // burst pulling the rail down and report a flat cell.
   out.magic     = LINK_MAGIC;
   out.counter   = counter;
   out.rssi      = myRssi;
   out.tempDeciC = readTempDeciC();
+  out.battMv    = readBatteryMv();
 
   bool acked   = radio.send(&out, sizeof(out));
   uint8_t tries = radio.lastObserveTx() & 0x0F;
@@ -803,6 +922,9 @@ void loop() {
     int16_t t = out.tempDeciC;
     if (t == TEMP_NONE) Serial.print(F("T=--     "));
     else                Serial.printf("T=%.1fC  ", t / 10.0f);
+    if (out.battMv != BATT_NONE)
+      Serial.printf("B=%.2fV/%u%%  ", out.battMv / 1000.0f,
+                    batteryPercent(out.battMv));
     Serial.printf("i hear you=%-3s   you hear me=%-3s   retries=%u   "
                   "remote lost=%u   answers=%lu/%lu\n",
                   peerRssi(myRssi, mine, sizeof(mine)),
@@ -862,6 +984,7 @@ void loop() {
     out.counter   = in.counter;
     out.lost      = lost;
     out.tempDeciC = readTempDeciC();
+    out.battMv    = readBatteryMv();
     // rssiAtPacket only means anything if the detector was armed for the round
     // this packet arrived on; otherwise carry the previous reading forward.
     if (armed) {
@@ -886,6 +1009,9 @@ void loop() {
     Serial.printf("[%6lu] ", (unsigned long)received);
     if (in.tempDeciC == TEMP_NONE) Serial.print(F("Ttx=--     "));
     else                           Serial.printf("Ttx=%.1fC  ", in.tempDeciC / 10.0f);
+    if (in.battMv != BATT_NONE)
+      Serial.printf("Btx=%.2fV/%u%%  ", in.battMv / 1000.0f,
+                    batteryPercent(in.battMv));
     Serial.printf("i hear you=%-3s (mean %u)   you hear me=%-3s   "
                   "lost=%u   seen=%lu\n",
                   peerRssi(lastRssi, mine, sizeof(mine)), lastAvg,
@@ -895,7 +1021,8 @@ void loop() {
 #ifdef BOARD_C3_OLED
     // in.tempDeciC is the initiator's temperature -- that is what goes on the
     // screen, not this board's own.
-    oledStatus(received, lost, lastRssi, lastAvg, in.rssi, in.tempDeciC, false);
+    oledStatus(received, lost, lastRssi, lastAvg, in.rssi, in.tempDeciC,
+               in.battMv, false);
 #endif
   }
 
@@ -903,7 +1030,8 @@ void loop() {
     lastHeard = millis();
     Serial.println(F("...nothing received for 5s"));
 #ifdef BOARD_C3_OLED
-    oledStatus(received, lost, lastRssi, lastAvg, RSSI_OFF, TEMP_NONE, true);
+    oledStatus(received, lost, lastRssi, lastAvg, RSSI_OFF, TEMP_NONE,
+               st.batt, true);
 #endif
   }
 }

@@ -380,6 +380,7 @@ so the page turns under your thumb rather than waiting for the next packet.
 |---|---|
 | `OVERVIEW` | counter, peer temperature centred, signal bar, both RSSI values, link state |
 | `TEMP` | transmitter's temperature in large digits |
+| `BATT` | transmitter's cell voltage, percentage, battery gauge |
 | `SIGNAL` | RSSI large, running mean, wide bar |
 | `STATS` | seen / lost / uptime |
 | `GRAPH` | temperature trace, last 68 samples, auto-scaled |
@@ -390,6 +391,50 @@ top right is the span the trace covers.
 
 Holding BOOT **through a reset** drops the C3 into download mode. That is the
 button doing its original job, not a fault.
+
+### Battery sense on the initiator
+
+A single Li-ion cell through a 1:2 divider into `GPIO0` (ADC1_CH0):
+
+```
+BAT+ ---[ R1 100k ]---+--- GPIO0
+                      |
+                      +---[ R2 100k ]--- GND
+                      |
+                      +---[ 100nF ]----- GND
+```
+
+**Why these values.** The C3's ADC is linear only to about **2.5 V** — unlike the
+original ESP32, which reaches ~3.1 V — so a full 4.2 V cell has to land at 2.10 V.
+That is what 1:2 is for, and it leaves 0.4 V of headroom while still using 60% of
+the range. Drain is 21 µA, negligible beside the C3 itself.
+
+The **100 nF is not optional**: the ADC samples through an internal capacitor, and
+a 50 kΩ source cannot charge it in the sampling window. Without it, readings come
+out low and noisy.
+
+**Why `GPIO0`.** ADC1 on the C3 is GPIO0–4 only (ADC2 is unusable). `1`, `3` and
+`4` carry `CE`/`MISO`/`CLK`. That leaves `GPIO0` and `GPIO2` — and `GPIO2` is a
+**boot strapping pin**, where a divider parking it near 2.1 V sits right on the VIH
+threshold and makes booting intermittent. `GPIO0` is nominally `IRQ` in the shared
+pin map, but nothing uses it: the driver polls. On the initiator, leave `IRQ`
+unconnected and the pin is free.
+
+**Calibration.** `BATT_CAL` in [`src/main.cpp`](src/main.cpp) trims out resistor
+tolerance and residual ADC error:
+
+1. read the cell with a multimeter
+2. read what the board reports
+3. `BATT_CAL = multimeter / reported`
+
+**Sampling.** The reading is taken at the top of `loop()`, after the inter-packet
+delay, while the radio is idle. Measuring during a transmit catches the 66 mA burst
+pulling the rail down and reports a flat cell.
+
+Percentage comes from an open-circuit Li-ion curve. Voltage alone sags under load
+and recovers at rest, so treat it as an indication, not a fuel gauge — and note
+that a SuperMini's LDO needs roughly 3.4 V in to hold 3.3 V out, so it falls out of
+regulation before the cell is genuinely empty.
 
 ### Temperature
 
