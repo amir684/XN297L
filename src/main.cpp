@@ -185,8 +185,10 @@ static const float BATT_DIVIDER = 2.0f;
 //   2. read what this board reports
 //   3. BATT_CAL = multimeter / reported
 //
-// e.g. meter says 3.95 V, board says 3.87 V  ->  3.95 / 3.87 = 1.021
-static const float BATT_CAL = 1.000f;
+// Measured on this board: meter 4.092 V, reported 4.030 V -> 4.092 / 4.030.
+// A divider is a pure ratio, so its error is gain, not offset -- one point is
+// enough and the correction holds across the whole range.
+static const float BATT_CAL = 1.0154f;
 
 static uint16_t readBatteryMv() {
   // The ADC is noisy enough that a single sample wanders tens of millivolts.
@@ -923,7 +925,7 @@ void loop() {
     if (t == TEMP_NONE) Serial.print(F("T=--     "));
     else                Serial.printf("T=%.1fC  ", t / 10.0f);
     if (out.battMv != BATT_NONE)
-      Serial.printf("B=%.2fV/%u%%  ", out.battMv / 1000.0f,
+      Serial.printf("B=%.3fV/%u%%  ", out.battMv / 1000.0f,
                     batteryPercent(out.battMv));
     Serial.printf("i hear you=%-3s   you hear me=%-3s   retries=%u   "
                   "remote lost=%u   answers=%lu/%lu\n",
@@ -1010,7 +1012,7 @@ void loop() {
     if (in.tempDeciC == TEMP_NONE) Serial.print(F("Ttx=--     "));
     else                           Serial.printf("Ttx=%.1fC  ", in.tempDeciC / 10.0f);
     if (in.battMv != BATT_NONE)
-      Serial.printf("Btx=%.2fV/%u%%  ", in.battMv / 1000.0f,
+      Serial.printf("Btx=%.3fV/%u%%  ", in.battMv / 1000.0f,
                     batteryPercent(in.battMv));
     Serial.printf("i hear you=%-3s (mean %u)   you hear me=%-3s   "
                   "lost=%u   seen=%lu\n",
