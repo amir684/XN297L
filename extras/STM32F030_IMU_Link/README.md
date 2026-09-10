@@ -184,6 +184,10 @@ Current sizes:
 | tx_stm32 | 30708 of 32768 | 1464 of 4096 |
 | rx_c3 | 290734 of 1310720 | 15124 |
 
+Measured on PlatformIO's `ststm32` 19.4.0, which `platformio.ini` pins for the
+sender. The STM32duino 3.0 core that 20.0.0 brings adds about 5.8 KB, and the
+sender no longer fits.
+
 ## What the sender does
 
 1. Scans I2C, finds the MPU6881, configures +/-2 g and +/-250 deg/s with the

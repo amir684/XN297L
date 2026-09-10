@@ -487,7 +487,9 @@ pio run -e tx_stm32 -t upload      # sensor board, over ST-Link
 
 It is the proof that the library fits a small part: the whole sender — sensor,
 filter, battery ADC and radio, register dump included — is 30.7 KB of the
-STM32F030K6's 32 KB. Two things make that possible, and both carry over to other
+STM32F030K6's 32 KB. That is on PlatformIO's `ststm32` 19.4.0, which the project
+pins: the STM32duino 3.0 core in 20.0.0 adds about 5.8 KB, and the sender stops
+fitting. Two things make the budget work at all, and both carry over to other
 projects:
 
 - `analogRead()` drags in about 2.9 KB of HAL. Driving the ADC through its
