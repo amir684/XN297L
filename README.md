@@ -37,8 +37,7 @@ no real documentation.
 - [RSSI: the undocumented feature](#rssi-the-undocumented-feature)
 - [Link quality without RSSI](#link-quality-without-rssi)
 - [Verification status](#verification-status)
-- [Example project: ESP32-C3 dashboard](#example-project-esp32-c3-dashboard)
-- [Example project: STM32F030 IMU link](#example-project-stm32f030-imu-link)
+- [Demo project](#demo-project)
 - [Roadmap](#roadmap)
 - [Sources](#sources)
 
@@ -123,7 +122,7 @@ supply the transmit current (up to 66 mA at 11 dBm), so the module needs **its o
 
 ² ESP32-C3 boards with a built-in 0.42" OLED use GPIO 5 and 6 for the display. Pick
 other pins and pass them to `SPI.begin(sck, miso, mosi)` before `radio.begin()` —
-see the dashboard project.
+see the demo project.
 
 ³ STM32F030K6 or F103 Blue Pill, on SPI1. CE on PA4 and CSN on PB0 are the IMU link
 board's wiring, which has run on hardware.
@@ -426,18 +425,32 @@ either way.
 
 ---
 
-## Example project: ESP32-C3 dashboard
+## Demo project
 
-[`extras/ESP32C3_Dashboard`](extras/ESP32C3_Dashboard) is the PlatformIO project
-this library grew out of: an ESP32-C3 SuperMini transmitter reporting its battery
-and temperature to an ESP32-C3 receiver with a built-in 0.42" OLED. It builds
-against the library in this repository.
+[`extras/XN297L_Demo`](extras/XN297L_Demo) is one PlatformIO project holding every
+board this library has run on, built against the library in this repository. Open
+the folder and each firmware is an env in the PlatformIO sidebar:
+
+| env | board | role |
+|---|---|---|
+| `tx` / `rx` | ESP32 WROOM | the original pair |
+| `tx_c3` | ESP32-C3 SuperMini | dashboard sender: battery, temperature, LED |
+| `rx_c3` | ESP32-C3 + 0.42" OLED | dashboard receiver, six pages |
+| `imu_tx_stm32` | STM32F030K6T6 + MPU6881 | IMU sender, flashed over ST-Link |
+| `imu_rx_c3` | ESP32-C3 + 0.42" OLED | IMU receiver, eight pages |
+| `scan` | ESP32 WROOM | the register sweep that found the RSSI enable |
 
 ```
-cd extras/ESP32C3_Dashboard
+cd extras/XN297L_Demo
 pio run -e tx_c3 -t upload
 pio run -e rx_c3 -t upload
 ```
+
+### ESP32-C3 dashboard
+
+An ESP32-C3 SuperMini transmitter reporting its battery and temperature to an
+ESP32-C3 receiver with a built-in 0.42" OLED -- the project this library grew out
+of.
 
 The BOOT button cycles six pages — overview, temperature, battery, signal, stats, and
 an auto-scaled temperature graph. The project also carries the `scan` environment
@@ -468,11 +481,9 @@ threshold. Sample between transmissions: a 66 mA burst reads as a flat cell.
 **ESP32-C3 temperature** is the die, not the room — useful for trends only. The
 original ESP32 has no usable sensor at all.
 
----
+### STM32F030 IMU link
 
-## Example project: STM32F030 IMU link
-
-[`extras/STM32F030_IMU_Link`](extras/STM32F030_IMU_Link) — an **STM32F030K6T6**
+An **STM32F030K6T6**
 reads an **MPU6881** over software I²C, fuses roll and pitch with a complementary
 filter, measures its own battery, and sends ten auto-acked packets a second to an
 ESP32-C3 with the 0.42" OLED, which cycles eight pages from an artificial horizon
@@ -480,10 +491,13 @@ to a link-quality view. By [r-d-PB](https://github.com/r-d-PB), MIT licensed and
 included with thanks.
 
 ```
-cd extras/STM32F030_IMU_Link
-pio run -e rx_c3    -t upload      # display board, over USB
-pio run -e tx_stm32 -t upload      # sensor board, over ST-Link
+cd extras/XN297L_Demo
+pio run -e imu_rx_c3    -t upload      # display board, over USB
+pio run -e imu_tx_stm32 -t upload      # sensor board, over ST-Link
 ```
+
+Its full write-up -- wiring, battery sense, the packet format, troubleshooting --
+is in [`IMU_LINK.md`](extras/XN297L_Demo/IMU_LINK.md).
 
 It is the proof that the library fits a small part: the whole sender — sensor,
 filter, battery ADC and radio, register dump included — is 30.8 KB of the

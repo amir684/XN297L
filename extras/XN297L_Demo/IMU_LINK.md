@@ -1,10 +1,10 @@
 # Wireless IMU link: STM32F030 + MPU6881 -> XN297L -> ESP32-C3 OLED
 
-> An example project of the [XN297L library](../../README.md). It began as a
-> standalone project (MIT, copyright r-d-PB -- see [LICENSE](LICENSE)) with its
-> own copy of the radio driver; here the same firmware builds against the
-> library in the root of this repository. Run the commands below from this
-> folder.
+> Part of the [XN297L library](../../README.md)'s demo project. It began as a
+> standalone project (MIT, copyright r-d-PB -- see [IMU_LINK_LICENSE](IMU_LINK_LICENSE))
+> with its own copy of the radio driver; here the same firmware builds against
+> the library in the root of this repository, as the `imu_tx_stm32` and
+> `imu_rx_c3` envs. Run the commands below from `extras/XN297L_Demo`.
 
 A 2.4 GHz telemetry link built out of two very small boards.
 
@@ -60,10 +60,10 @@ XN297L's departures from the nRF24L01 were worked out, and where this panel's
 The radio driver is the XN297L library at the repository root.
 
 ```
-platformio.ini                 two envs, one per board
+platformio.ini                 the demo's envs; these two are imu_*
 include/link_packet.h          the wire format, shared by both ends
-src/main_tx_stm32.cpp          sender: MPU6881 + battery -> radio
-src/main_rx_c3.cpp             receiver: radio -> OLED
+src/imu_tx_stm32.cpp          sender: MPU6881 + battery -> radio
+src/imu_rx_c3.cpp             receiver: radio -> OLED
 boards/genericSTM32F030K6.json board definition for the F030K6T6
 reference/main_sensor_only.cpp the original sketch, sensor to serial, no radio
 ```
@@ -166,10 +166,10 @@ STM32 resets while transmitting, lower `RF_POWER` in the sender to
 Needs [PlatformIO](https://platformio.org/). Both boards live in one project:
 
 ```
-pio run -e rx_c3    -t upload      # display board, over USB
-pio run -e tx_stm32 -t upload      # sensor board, over ST-Link
-pio run -e tx_stm32 -t monitor     # needs monitor_port set to the USB-TTL COM
-pio run                            # builds the sender, the default env
+pio run -e imu_rx_c3    -t upload      # display board, over USB
+pio run -e imu_tx_stm32 -t upload      # sensor board, over ST-Link
+pio run -e imu_tx_stm32 -t monitor     # needs monitor_port set to the USB-TTL COM
+pio run                            # builds every env in the demo
 ```
 
 Flash the receiver first so it is already listening, then the sender. The
@@ -181,8 +181,8 @@ Current sizes:
 
 | Env | Flash | RAM |
 | --- | --- | --- |
-| tx_stm32 | 30760 of 32768 | 1464 of 4096 |
-| rx_c3 | 290734 of 1310720 | 15124 |
+| imu_tx_stm32 | 30760 of 32768 | 1464 of 4096 |
+| imu_rx_c3 | 290734 of 1310720 | 15124 |
 
 Measured on PlatformIO's `ststm32` 19.7.1 (STM32duino 2.12), which
 `platformio.ini` pins for the sender. The STM32duino 3.0 core that 20.0.0 brings

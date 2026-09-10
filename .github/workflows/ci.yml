@@ -66,7 +66,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        project: [ESP32C3_Dashboard, STM32F030_IMU_Link]
+        project: [XN297L_Demo]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
