@@ -143,6 +143,10 @@ to use interrupts (`maskIRQ()` and `whatHappened()` are there for that).
 | **DynamicPayloads** | Packets exactly as long as their contents. |
 | **AckPayloads** | Data returned inside the acknowledgement. |
 
+**PlatformIO users** can build any example without copying it anywhere:
+[`extras/ExampleRunner`](extras/ExampleRunner/platformio.ini) points PlatformIO's
+source directory at an example and builds it against this repository.
+
 ---
 
 ## API
