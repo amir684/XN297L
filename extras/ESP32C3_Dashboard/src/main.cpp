@@ -18,18 +18,21 @@
 //   lost    -- gaps in the counter sequence, packets the responder never saw
 //
 // Plus RSSI, which is neither documented nor free -- register 0x09 works once
-// RSSI_GAIN_CTR is set, but that setting costs 6 dB of receive sensitivity, so
-// only the responder measures. See README.md.
+// RSSI_GAIN_CTR is set, but that costs 6 dB of receive sensitivity, so both
+// boards arm it for one round in RSSI_SAMPLE_EVERY.
+//
+// Built on the XN297L library in the root of this repository; platformio.ini
+// links it straight from there. Run from this directory:
 //
 //   pio run -e tx -t upload
 //   pio run -e rx -t upload
 //
-// Wiring is identical on both boards -- see README.md.
+// Wiring and the full story are in the repository README.
 // -----------------------------------------------------------------------------
 #include <Arduino.h>
 #include <SPI.h>
 
-#include "xn297l.h"
+#include <XN297L.h>
 
 #if !defined(ROLE_TX) && !defined(ROLE_RX) && !defined(ROLE_SCAN)
 #error "Build with -DROLE_TX, -DROLE_RX or -DROLE_SCAN (tx / rx / scan env)"
@@ -49,14 +52,9 @@ static const int PIN_MISO = 3;
 static const int PIN_MOSI = 10;
 static const int PIN_CSN  = 7;
 static const int PIN_CE   = 1;
-#ifdef BOARD_C3_SUPERMINI
-// GPIO0 is the battery divider on this board, so IRQ goes unconnected. Nothing
-// is lost: the driver polls and never reads the pin. -1 tells it to leave the
-// GPIO alone entirely, which it must, or pinMode would fight the ADC.
-static const int PIN_IRQ  = -1;
-#else
-static const int PIN_IRQ  = 0;
-#endif
+// IRQ goes to GPIO0 on the OLED board and stays unconnected on the SuperMini,
+// where GPIO0 is the battery divider. The library polls and never touches the
+// IRQ pin, so neither choice needs anything from the code.
 #else
 // ESP32 WROOM, hardware VSPI.
 static const int PIN_SCK  = 18;
@@ -64,7 +62,7 @@ static const int PIN_MISO = 19;
 static const int PIN_MOSI = 23;
 static const int PIN_CSN  = 5;
 static const int PIN_CE   = 4;
-static const int PIN_IRQ  = 16;   // wired but not used yet; polling for now
+// IRQ: GPIO16, wired but unused -- the library polls.
 #endif
 
 #ifdef BOARD_C3_SUPERMINI
@@ -84,19 +82,16 @@ static void ledBlink(bool ok) {
 
 // ---- link settings (must match on both boards) ----
 static const uint8_t RF_CHANNEL = 78;                              // 2478 MHz
-static uint8_t       RF_ADDRESS[5] = {0xC2, 0xC2, 0xC2, 0xC2, 0xC2};
+
+// One address per direction -- see setup() for why.
+static const uint8_t ADDR_TO_RESPONDER[5] = {0xC2, 0xC2, 0xC2, 0xC2, 0xC2};
+static const uint8_t ADDR_TO_INITIATOR[5] = {0xC3, 0xC2, 0xC2, 0xC2, 0xC2};
 
 // Running SPI clock. The driver forces 1 MHz during init regardless -- the
 // chip caps SPI at 1 Mbps while in power-down / standby-I -- and only steps up
-// to this once the radio is in standby-III. Drop it to XN_SPI_HZ_SLOW if long
-// wires to a salvaged module make the link flaky.
-static const uint32_t SPI_HZ = XN_SPI_HZ_FAST;
-
-// Experiment, already run on this hardware -- leave off. Setting RF_SETUP bit 7
-// asked the chip whether it behaves like an XN297 (bit 7 = RSSI_EN) or a real
-// XN297L (bit 7 = top of RF_DR). The answer was XN297L: data still crossed, but
-// the auto-ACK stopped and 0x09 stayed at zero. See README.md.
-static const bool TRY_RSSI_EN = false;
+// to this once the radio is in standby-III. Drop it to 1000000 if long wires
+// to a salvaged module make the link flaky.
+static const uint32_t SPI_HZ = XN297L_SPI_SPEED;
 
 // Undocumented RSSI: RSSI_GAIN_CTR in RF_CAL (0x1E bits 16:15), located by the
 // scan env. 0 is the chip's reset value and reports nothing; 1 = -6 dB, 2 =
@@ -130,10 +125,10 @@ static const uint32_t REPLY_TIMEOUT_MS = 20;
 // to finish switching from TX back into RX (standby-III -> RX takes 320us).
 static const uint32_t TURNAROUND_MS = 3;
 
-static XN297L radio(PIN_CE, PIN_CSN, PIN_IRQ);
+static XN297L radio(PIN_CE, PIN_CSN);
 
 // ---- what travels over the air ----
-// Fixed 32-byte payloads, so this only has to stay under 32; the driver pads.
+// Static 32-byte payloads, the library default: this only has to stay under 32.
 // A fixed magic word leads the payload so a receiver can tell a real packet
 // from noise it merely managed to clock into the FIFO. Without this the sweep
 // below cannot distinguish "reception still works" from "the chip now accepts
@@ -789,7 +784,7 @@ static void haltWithDiagnostics() {
   Serial.println(F("  4. a 10uF cap across the module 3V3/GND"));
   Serial.println(F("  5. the crystal is intact -- no 16MHz clock, no SPI answer"));
   Serial.println(F("A register dump follows. All 00 or all FF means no SPI at all."));
-  radio.dumpRegisters(Serial);
+  radio.printDetails(Serial);
 
 #ifdef BOARD_C3_OLED
   oled.clearBuffer();
@@ -840,22 +835,30 @@ void setup() {
   Serial.println(F("SPI self-test PASSED -- the module is alive."));
 
   radio.setChannel(RF_CHANNEL);
-  radio.setAddress(RF_ADDRESS, sizeof(RF_ADDRESS));
 
-  if (TRY_RSSI_EN) {
-    uint8_t before = radio.readReg(XN_REG_RF_SETUP);
-    uint8_t after  = radio.setRssiEnable(true);
-    Serial.printf("RSSI_EN experiment: RF_SETUP %02X -> %02X\n", before, after);
-    Serial.println(F("  link still up + register 09 non-zero => XN297 silicon"));
-    Serial.println(F("  link broken                          => real XN297L"));
-  }
+  // 11 dBm, as this link has always run. The library defaults to 9 dBm, which
+  // gives up 2 dB for roughly half the transmit current.
+  radio.setPALevel(XN297L_PA_MAX);
+
+  // One address per direction, the way the RF24 examples do it. Pipe 0 is on
+  // loan to the writing address to receive ACKs, and the datasheet does not
+  // allow two pipes to share an address, so each board listens for the other on
+  // pipe 1.
+#if defined(ROLE_TX)
+  radio.openWritingPipe(ADDR_TO_RESPONDER);
+  radio.openReadingPipe(1, ADDR_TO_INITIATOR);
+#else   // the responder and the scan both listen for the initiator
+  radio.openWritingPipe(ADDR_TO_INITIATOR);
+  radio.openReadingPipe(1, ADDR_TO_RESPONDER);
+#endif
 
   if (RSSI_GAIN >= 0) {
-    uint8_t v = radio.enableRssi((uint8_t)RSSI_GAIN);
-    Serial.printf("RSSI enabled (gain %d): 0x09 now reads %02X\n", RSSI_GAIN, v);
+    radio.enableRSSI((xn297l_rssi_atten_e)RSSI_GAIN);
+    Serial.print(F("RSSI attenuation code "));
+    Serial.println(RSSI_GAIN);
   }
 
-  radio.dumpRegisters(Serial);
+  radio.printDetails(Serial);
   Serial.println();
 
 #ifdef ROLE_RX
@@ -883,8 +886,8 @@ void loop() {
   out.tempDeciC = readTempDeciC();
   out.battMv    = readBatteryMv();
 
-  bool acked   = radio.send(&out, sizeof(out));
-  uint8_t tries = radio.lastObserveTx() & 0x0F;
+  bool acked   = radio.write(&out, sizeof(out));
+  uint8_t tries = radio.getARC();
 
   LinkPacket in = {};
   bool gotAnswer = false;
@@ -892,7 +895,8 @@ void loop() {
   // Arm the detector only for the rounds we actually sample on, so the answer
   // path runs at full sensitivity the rest of the time.
   bool sampling = (RSSI_GAIN >= 0) && (counter % RSSI_SAMPLE_EVERY == 0);
-  if (RSSI_GAIN >= 0) radio.enableRssi(sampling ? (uint8_t)RSSI_GAIN : 0);
+  if (RSSI_GAIN >= 0)
+    radio.enableRSSI((xn297l_rssi_atten_e)(sampling ? RSSI_GAIN : 0));
 
   if (acked) {
     // The ACK already proved the packet arrived; the answer only carries the
@@ -901,7 +905,7 @@ void loop() {
     uint32_t start = millis();
     while (millis() - start < REPLY_TIMEOUT_MS) {
       if (radio.available()) {
-        uint8_t latched = radio.lastRssi();
+        uint8_t latched = radio.getRSSI();
         radio.read(&in, sizeof(in));
         if (in.magic != LINK_MAGIC) continue;   // noise, not an answer
         if (sampling) {
@@ -965,7 +969,7 @@ void loop() {
 #endif
 
   if (radio.available()) {
-    uint8_t rssiAtPacket = radio.lastRssi();
+    uint8_t rssiAtPacket = radio.getRSSI();
     LinkPacket in = {};
     radio.read(&in, sizeof(in));
     if (in.magic != LINK_MAGIC) return;   // noise, not one of ours
@@ -995,11 +999,12 @@ void loop() {
     }
     out.rssi = lastRssi;
 
-    radio.sendNoAck(&out, sizeof(out));
+    radio.write(&out, sizeof(out), true);
 
     // Arm or disarm for the next packet, while the radio is still in standby.
     armed = (RSSI_GAIN >= 0) && (received % RSSI_SAMPLE_EVERY == 0);
-    if (RSSI_GAIN >= 0) radio.enableRssi(armed ? (uint8_t)RSSI_GAIN : 0);
+    if (RSSI_GAIN >= 0)
+      radio.enableRSSI((xn297l_rssi_atten_e)(armed ? RSSI_GAIN : 0));
 
     radio.startListening();
 
@@ -1044,7 +1049,7 @@ void loop() {
 // the top of RF_DR (proven by experiment -- see README), so if the function
 // still exists its enable moved into one of the registers the XN297L manual
 // refuses to document. These three are the candidates:
-static const uint8_t SCAN_REG[]  = {XN_REG_DEMOD_CAL, XN_REG_DEM_CAL2, XN_REG_RF_CAL};
+static const uint8_t SCAN_REG[]  = {XN297L_REG_DEMOD_CAL, XN297L_REG_DEM_CAL2, XN297L_REG_RF_CAL};
 static const uint8_t SCAN_LEN[]  = {1, 3, 3};
 static const uint8_t SCAN_COUNT  = 3;
 static const uint8_t MAX_REG_LEN = 3;
@@ -1061,7 +1066,7 @@ static const uint32_t CANDIDATE_MS = 1500;
 
 static void restoreDefaults() {
   for (uint8_t i = 0; i < SCAN_COUNT; i++)
-    radio.writeRegMulti(SCAN_REG[i], scanDefault[i], SCAN_LEN[i]);
+    radio.writeRegister(SCAN_REG[i], scanDefault[i], SCAN_LEN[i]);
 }
 
 // Listens for CANDIDATE_MS and returns the largest value register 0x09 showed.
@@ -1083,11 +1088,12 @@ static uint8_t probe(uint16_t &good, uint16_t &bad) {
   radio.startListening();
   uint32_t t0 = millis();
   while (millis() - t0 < CANDIDATE_MS) {
-    uint8_t v = radio.readReg(XN_REG_RSSI);
+    uint8_t v = radio.readRegister(XN297L_REG_RSSI);
     if (v > best) best = v;
 
     if (radio.available()) {
-      uint8_t latched = radio.lastRssi();
+      // Raw register, both nibbles: the sweep is after any movement at all.
+      uint8_t latched = radio.readRegister(XN297L_REG_RSSI);
       if (latched > best) best = latched;
       LinkPacket in = {};
       radio.read(&in, sizeof(in));
@@ -1108,14 +1114,14 @@ void loop() {
   // anything.
   Serial.println(F("power-on values of the undocumented registers:"));
   for (uint8_t i = 0; i < SCAN_COUNT; i++) {
-    radio.readRegMulti(SCAN_REG[i], scanDefault[i], SCAN_LEN[i]);
+    radio.readRegister(SCAN_REG[i], scanDefault[i], SCAN_LEN[i]);
     Serial.printf("  0x%02X =", SCAN_REG[i]);
     for (uint8_t b = 0; b < SCAN_LEN[i]; b++) Serial.printf(" %02X", scanDefault[i][b]);
     Serial.println();
   }
   uint8_t rfcal2[6];
-  radio.readRegMulti(XN_REG_RF_CAL2, rfcal2, 6);
-  Serial.printf("  0x%02X =", XN_REG_RF_CAL2);
+  radio.readRegister(XN297L_REG_RF_CAL2, rfcal2, 6);
+  Serial.printf("  0x%02X =", XN297L_REG_RF_CAL2);
   for (uint8_t b = 0; b < 6; b++) Serial.printf(" %02X", rfcal2[b]);
   Serial.println(F("   (not swept)"));
   Serial.println();
@@ -1139,7 +1145,7 @@ void loop() {
         buf[byteIdx] ^= (uint8_t)(1 << bit);
 
         restoreDefaults();
-        radio.writeRegMulti(SCAN_REG[i], buf, SCAN_LEN[i]);
+        radio.writeRegister(SCAN_REG[i], buf, SCAN_LEN[i]);
 
         uint8_t best = probe(good, bad);
 

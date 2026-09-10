@@ -1,0 +1,40 @@
+{
+  "name": "XN297L",
+  "version": "1.0.0",
+  "description": "Driver for the Panchip XN297L 2.4GHz transceiver, with an RF24-compatible API and the undocumented RSSI. Handles the register-level differences that break nRF24L01 drivers on this chip.",
+  "keywords": [
+    "xn297l",
+    "xn297",
+    "panchip",
+    "2.4ghz",
+    "rf",
+    "radio",
+    "wireless",
+    "transceiver",
+    "nrf24l01",
+    "rf24",
+    "rssi"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/amir684/XN297L.git"
+  },
+  "authors": [
+    {
+      "name": "amir684",
+      "url": "https://github.com/amir684",
+      "maintainer": true
+    }
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/amir684/XN297L",
+  "frameworks": "arduino",
+  "platforms": "*",
+  "headers": "XN297L.h",
+  "export": {
+    "exclude": [
+      ".github",
+      "extras/*/.pio"
+    ]
+  }
+}

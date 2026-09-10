@@ -1,205 +1,300 @@
-# XN297L + ESP32
+# XN297L
 
-A working driver and bring-up toolkit for the **Panchip XN297L** 2.4 GHz transceiver,
-written from the datasheet and validated against modules desoldered from a 2015
-Chinese toy drone.
+[![CI](https://github.com/amir684/XN297L/actions/workflows/ci.yml/badge.svg)](https://github.com/amir684/XN297L/actions/workflows/ci.yml)
 
-It also documents three things that are **not in any XN297L datasheet**:
+An Arduino library for the **Panchip XN297L** 2.4 GHz transceiver — with an
+RF24-compatible API, and the RSSI readout the datasheet never explains.
 
-- **RSSI works on the XN297L** — the register is documented but permanently reads
-  zero, because the enable lives somewhere Panchip never published. Located here by
-  bit sweep, and verified against distance.
-- **Four register-level differences from the nRF24L01** that silently break ported
-  drivers. One of them stops the radio transmitting while SPI still looks perfect.
-- **Calibration for the 0.42" 72×40 OLED** on the ESP32-C3 boards, which is cut
-  differently from what U8g2's device table assumes — in both axes.
+The XN297L is the radio inside a great many cheap toy drones, RC cars and
+remotes. Its register map looks like an nRF24L01's, which is exactly why nRF24
+drivers fail on it: SPI works, every register reads back correctly, and nothing
+ever goes on air. This library is written from the Panchip datasheet, handles the
+register-level differences that cause that, and was developed against modules
+desoldered from a 2015 toy drone.
 
-Everything below was measured on hardware. Failures and dead ends are documented
-alongside the results, because knowing what was already ruled out is most of the
-value.
+- **RF24-compatible API.** `openWritingPipe`, `write`, `available`, `read` —
+  nRF24L01 code ports across almost line for line.
+- **RSSI.** The register is documented; the way to turn it on is not. Found by bit
+  sweep, cross-checked against Panchip's own init code, and verified against
+  distance.
+- **Portable.** ESP32, ESP32-C3, AVR, RP2040 and STM32, compile-tested in CI on
+  every push.
+
+Everything here was measured, and the dead ends are documented alongside the
+results — knowing what was already ruled out is most of the value when a chip has
+no real documentation.
 
 ---
 
 ## Contents
 
-- [Hardware](#hardware)
+- [Installation](#installation)
 - [Quick start](#quick-start)
 - [Wiring](#wiring)
+- [Examples](#examples)
+- [API](#api)
 - [The XN297L is not an nRF24L01](#the-xn297l-is-not-an-nrf24l01)
 - [RSSI: the undocumented feature](#rssi-the-undocumented-feature)
 - [Link quality without RSSI](#link-quality-without-rssi)
-- [The 0.42" OLED](#the-042-oled)
-- [Display pages](#display-pages)
-- [Project layout](#project-layout)
+- [Verification status](#verification-status)
+- [Example project: ESP32-C3 dashboard](#example-project-esp32-c3-dashboard)
+- [Roadmap](#roadmap)
 - [Sources](#sources)
 
 ---
 
-## Hardware
+## Installation
 
-| Part | Notes |
-|---|---|
-| **XN297L module** | `GB-XN297L`, dated 2015-09-08, salvaged from a toy drone remote. 8 pads: `3V3 GND CLK MISO MOSI CSN CE IRQ`. 16 MHz crystal, wire antenna. |
-| **ESP32 WROOM** | Original dev boards, envs `tx` / `rx`. |
-| **ESP32-C3 SuperMini** | Native USB, on-board LED on GPIO8. Env `tx_c3`. |
-| **ESP32-C3 + 0.42" OLED** | 72×40 SSD1306, 01Space-style board. Env `rx_c3`. |
+**Arduino IDE** — *Sketch → Include Library → Manage Libraries*, search for
+**XN297L**.
 
-Supply is **2.2–3.3 V** — the ESP32's 3V3 rail sits at the very top of that range.
-Put **10 µF across the module's 3V3/GND**, close to the pads. The reference design
-shows 1 µF; on breadboard wiring with the radio pulling 30–66 mA in bursts, 10 µF
-is not excessive. Supply sag is the single most common cause of a link that works
-intermittently and looks like a range problem.
+**PlatformIO**
+
+```ini
+lib_deps = amir684/XN297L
+```
+
+**Manually** — download this repository as a ZIP and use *Sketch → Include Library
+→ Add .ZIP Library*.
 
 ---
 
 ## Quick start
 
-```bash
-# the original pair
-pio run -e tx    -t upload --upload-port COM3
-pio run -e rx    -t upload --upload-port COM4
+```cpp
+#include <XN297L.h>
 
-# ESP32-C3 pair, with the OLED on the receiver
-pio run -e tx_c3 -t upload --upload-port COM7
-pio run -e rx_c3 -t upload --upload-port COM6
+XN297L radio(4, 5);                  // CE, CSN
+const uint8_t address[5] = {'N', 'o', 'd', 'e', '1'};
 
-pio device monitor -b 115200
+void setup() {
+  Serial.begin(115200);
+  if (!radio.begin()) Serial.println("XN297L not responding");
+
+  radio.openWritingPipe(address);
+  radio.stopListening();
+}
+
+void loop() {
+  const char msg[] = "hello";
+  bool acked = radio.write(msg, sizeof(msg));
+  Serial.println(acked ? "sent" : "no ACK");
+  delay(1000);
+}
 ```
 
-| env | board | role |
-|---|---|---|
-| `tx` | ESP32 WROOM | initiator |
-| `rx` | ESP32 WROOM | responder |
-| `tx_c3` | ESP32-C3 SuperMini | initiator, LED status |
-| `rx_c3` | ESP32-C3 + OLED | responder, 5-page display |
-| `scan` | either | register sweep used to find RSSI |
+The receiving side:
 
-All four roles speak the same protocol, so any pairing works — WROOM to C3, C3 to
-C3, whatever is on the bench.
+```cpp
+radio.openReadingPipe(1, address);
+radio.startListening();
 
-Expected output:
-
+if (radio.available()) {
+  char msg[32];
+  radio.read(msg, sizeof(msg));
+}
 ```
-SPI self-test PASSED -- the module is alive.
-[    21] Ttx=34.2C  i hear you=6 (mean 6)  you hear me=7  lost=0  seen=22
-```
+
+Both sides have to agree on the payload size — 32 bytes unless you call
+`setPayloadSize()`, or use `enableDynamicPayloads()` and stop worrying about it.
 
 ---
 
 ## Wiring
 
-### ESP32 WROOM
+| XN297L | ESP32 | ESP32-C3 | Pico | Blue Pill | Uno / Nano ¹ |
+|---|---|---|---|---|---|
+| `3V3` | 3V3 | 3V3 | 3V3 | 3V3 | **separate 3.3 V regulator** |
+| `GND` | GND | GND | GND | GND | GND |
+| `CLK` | 18 | 4 | GP18 | PA5 | 13 |
+| `MISO` | 19 | 5 ² | GP16 | PA6 | 12 |
+| `MOSI` | 23 | 6 ² | GP19 | PA7 | 11 |
+| `CSN` | 5 | 7 | GP17 | PA4 | 10 |
+| `CE` | 4 | 1 | GP20 | PB0 | 9 |
+| `IRQ` | optional | optional | optional | optional | optional |
 
-| XN297L | ESP32 | |
-|---|---|---|
-| `3V3` | `3V3` | **not 5 V** |
-| `GND` | `GND` | |
-| `CLK` | `GPIO18` | VSPI SCK |
-| `MISO` | `GPIO19` | VSPI MISO |
-| `MOSI` | `GPIO23` | VSPI MOSI |
-| `CSN` | `GPIO5` | |
-| `CE` | `GPIO4` | |
-| `IRQ` | `GPIO16` | wired, not yet used — the driver polls |
+CE and CSN are free choices; the rest are each board's default SPI pins.
 
-### ESP32-C3 (both boards)
+¹ **5 V boards need two extra parts.** The XN297L's absolute maximum input is
+3.6 V, so the logic lines need a **level shifter**. And the Uno's 3V3 pin cannot
+supply the transmit current (up to 66 mA at 11 dBm), so the module needs **its own
+3.3 V regulator**.
 
-| XN297L | ESP32-C3 |
+² ESP32-C3 boards with a built-in 0.42" OLED use GPIO 5 and 6 for the display. Pick
+other pins and pass them to `SPI.begin(sck, miso, mosi)` before `radio.begin()` —
+see the dashboard project.
+
+**Supply.** The XN297L runs on 2.2–3.3 V. Put **10 µF across the module's 3V3 and
+GND**, close to the pads. Supply sag during transmit bursts is the single most
+common cause of a link that works intermittently and looks like a range problem.
+
+The `IRQ` pin is active-low and optional. The library polls; connect it if you want
+to use interrupts (`maskIRQ()` and `whatHappened()` are there for that).
+
+---
+
+## Examples
+
+| Example | What it shows |
 |---|---|
-| `CLK` | `GPIO4` |
-| `MISO` | `GPIO3` |
-| `MOSI` | `GPIO10` |
-| `CSN` | `GPIO7` |
-| `CE` | `GPIO1` |
-| `IRQ` | `GPIO0` |
+| **WiringCheck** | Is the module alive? Proves SPI in both directions and dumps every register. Run this first. |
+| **GettingStarted** | Two radios, one sketch — the RF24 example of the same name, ported. |
+| **RSSIMeter** | Signal strength, duty-cycled to avoid the sensitivity cost. |
+| **DynamicPayloads** | Packets exactly as long as their contents. |
+| **AckPayloads** | Data returned inside the acknowledgement. |
 
-`GPIO5`/`6` are the OLED's I²C, `2`/`8`/`9` are strapping pins, `20`/`21` are the
-UART. The map above avoids all of them, and is shared by **both** C3 boards —
-including the SuperMini that has no display and could spare 5/6 — so one jumper
-harness fits both and swapping roles needs no rewiring.
+---
+
+## API
+
+### RF24-compatible
+
+Names and behaviour follow [RF24](https://github.com/nRF24/RF24), including its
+pipe 0 handling: `openWritingPipe()` borrows pipe 0 to receive ACKs,
+`startListening()` restores the reading address or closes pipe 0, and
+`stopListening()` points it back at the writing address.
+
+| | |
+|---|---|
+| `begin()` | starts SPI, resets and configures; `true` if the chip answers |
+| `isChipConnected()` | SPI round trip in both directions |
+| `powerUp()` / `powerDown()` | |
+| `startListening()` / `stopListening()` | |
+| `available()` / `available(&pipe)` | |
+| `read(buf, len)` | |
+| `write(buf, len)` | blocks until ACKed or retries run out |
+| `write(buf, len, true)` | no ACK requested — works straight after `begin()` |
+| `openWritingPipe(addr)` | |
+| `openReadingPipe(pipe, addr)` / `closeReadingPipe(pipe)` | pipes 2–5 take only the low byte |
+| `setAddressWidth(3..5)` | |
+| `setRetries(delay, count)` | delay step 250 µs |
+| `setChannel()` / `getChannel()` | 2400 + n MHz |
+| `setPayloadSize()` / `getPayloadSize()` | 1–32 |
+| `enableDynamicPayloads()` / `disableDynamicPayloads()` / `getDynamicPayloadSize()` | |
+| `enableAckPayload()` / `writeAckPayload()` | |
+| `enableDynamicAck()` | |
+| `setAutoAck(bool)` / `setAutoAck(pipe, bool)` | |
+| `setPALevel()` / `getPALevel()` | |
+| `setDataRate()` / `getDataRate()` | |
+| `setCRCLength()` / `getCRCLength()` / `disableCRC()` | |
+| `getARC()` | retransmits on the last write |
+| `rxFifoFull()`, `flush_rx()`, `flush_tx()` | |
+| `maskIRQ()`, `whatHappened()` | |
+| `printDetails(Stream&)` | |
+
+**Porting from RF24:** rename the constants — `RF24_PA_LOW` → `XN297L_PA_LOW`,
+`RF24_1MBPS` → `XN297L_1MBPS`, `RF24_CRC_16` → `XN297L_CRC_16`.
+
+### XN297L only
+
+| | |
+|---|---|
+| `enableRSSI(attenuation)` / `disableRSSI()` | the undocumented detector — costs sensitivity, see below |
+| `getRSSI()` | 0–15, latched by `available()` |
+| `readRegister()` / `writeRegister()` | single byte or multi-byte |
+| `getStatus()` | |
+
+### Output power
+
+| constant | dBm | TX current |
+|---|---|---|
+| `XN297L_PA_MINUS23DBM` / `XN297L_PA_MIN` | −23 | ~9 mA |
+| `XN297L_PA_MINUS10DBM` | −10 | |
+| `XN297L_PA_MINUS1DBM` / `XN297L_PA_LOW` | −1 | ~16 mA |
+| `XN297L_PA_4DBM` | 4 | |
+| `XN297L_PA_5DBM` | 5 | ~20 mA |
+| `XN297L_PA_9DBM` / `XN297L_PA_HIGH` | 9 | ~30 mA — **default** |
+| `XN297L_PA_11DBM` / `XN297L_PA_MAX` | 11 | ~66 mA |
+
+The default is 9 dBm rather than the maximum: 2 dB less for under half the current,
+which keeps a weak supply out of trouble. The receiver itself saturates above
+0 dBm, so two boards on one desk at full power can link *worse* than at `LOW`.
+
+Data rates are `XN297L_1MBPS` (default), `XN297L_2MBPS` and `XN297L_250KBPS`. The
+datasheet asks for a ±20 ppm crystal at 250 kbps.
 
 ---
 
 ## The XN297L is not an nRF24L01
 
 The register map looks compatible, which is exactly the trap. Four differences
-matter, and each is marked at its definition in [`src/xn297l.h`](src/xn297l.h).
+matter, and each is handled and explained where it lives in
+[`src/XN297L.cpp`](src/XN297L.cpp).
 
 ### 1. `CONFIG` bit 7 is `EN_PM`, and it must be set
 
-The big one. On the nRF24L01 this bit is reserved-zero. On the XN297L, Table 4-1
-requires `EN_PM = 1` for **both** RX and TX — it is what moves the chip from
-standby-I to standby-III, and TX and RX are only reachable from there.
+On the nRF24L01 this bit is reserved-zero. On the XN297L, Table 4-1 requires
+`EN_PM = 1` for **both** RX and TX — it is what moves the chip from standby-I to
+standby-III, and TX and RX are only reachable from there.
 
-A driver ported from nRF24 code leaves it clear. The symptom is brutal to debug:
-SPI works perfectly, the self-test passes, the register dump looks right, and not
-one packet ever moves.
-
-```c
-_baseConfig = XN_CFG_EN_PM | XN_CFG_EN_CRC | XN_CFG_CRCO | XN_CFG_PWR_UP;
-```
+A ported nRF24 driver leaves it clear, and the symptom is brutal to debug: SPI works
+perfectly, the self-test passes, the register dump looks right, and not one packet
+ever moves.
 
 ### 2. `RF_SETUP` is a 2-bit rate and a 6-bit power code
 
 | field | bits | values |
 |---|---|---|
-| `RF_DR` | 7:6 | `00` = 1 Mbps, `01` = 2 Mbps, `11` = 250 kbps |
-| `RF_PWR` | 5:0 | `100111` = 11 dBm, `010101` = 9, `101100` = 5, `010100` = 4, `101010` = −1, `011001` = −10, `110000` = −23 |
+| `RF_DR` | 7:6 | `00` = 1 Mbps, `01` = 2 Mbps, `11` = 250 kbps, `10` reserved |
+| `RF_PWR` | 5:0 | a code from a fixed table — see [Output power](#output-power) |
 
-The power field is a **code from a fixed table**, not the nRF24's 0–3 scale. An
-nRF24 "max power" value lands on a combination that does not exist.
+An nRF24 "max power" value lands on a combination that does not exist.
 
-Current draw is worth knowing before choosing: **11 dBm ≈ 66 mA, 9 dBm ≈ 30 mA.**
-Two dB for less than half the current makes 9 dBm the better default on a dev
-board regulator.
+### 3. Reset is a command with a data byte
 
-### 3. Reset is a two-command sequence
-
-```c
-0x53, 0x5A   // hold in reset
-0x53, 0xA5   // release
-```
-
-The data byte is not optional. A bare `0x53` leaves the chip latched in reset.
+`0x53 0x5A` holds the chip in reset, `0x53 0xA5` releases it. A bare `0x53` leaves
+it latched in reset.
 
 ### 4. SPI is capped at 1 Mbps in power-down and standby-I
 
-Which is where all of initialisation happens. `begin()` runs at 1 MHz and only
-steps up to 4 MHz after reaching standby-III.
+Which is where initialisation happens. `begin()` runs at 1 MHz and only steps up
+after reaching standby-III; `powerDown()` drops back.
 
 ### Also
 
-- `FEATURE` carries `MUX_PA_IRQ`, `CE_SEL` and `DATA_LEN_SEL`, none of which exist
-  on the nRF24.
+- `FEATURE` carries `MUX_PA_IRQ`, `CE_SEL` and `DATA_LEN_SEL`, which have no nRF24
+  equivalent.
 - The datasheet's `FIFO_STATUS` table has the names and descriptions of bits 0 and
-  1 **crossed**. This driver uses `STATUS.RX_P_NO` (`111` = empty) instead, which
-  is unambiguous.
-- Channels that are multiples of 16 MHz — 0, 16, 32, 48, 64, 80 — cost about 2 dB
-  of sensitivity, because they land on the crystal's harmonics. Default here is 78.
+  1 **crossed**. The library uses `STATUS.RX_P_NO` (`111` = empty) to detect data,
+  and the reset values to pin down which bit is which.
+- Channels on multiples of the 16 MHz crystal — 0, 16, 32, 48, 64, 80 — lose about
+  2 dB of sensitivity. The default is 78.
+- **API-compatible is not air-compatible.** The XN297 family frames packets
+  differently from the nRF24L01; an XN297L does not talk to an nRF24L01 radio
+  directly.
 
 ---
 
 ## RSSI: the undocumented feature
 
-**Short version:** the XN297L can report RSSI. It is off by default, the enable is
-not in the XN297L datasheet, and turning it on costs 6 dB of receive sensitivity.
+**Short version:** the XN297L can report RSSI. It is off by default, the enable is in
+no XN297L datasheet, and turning it on costs about 6 dB of receive sensitivity — so
+enable it for the packets you want to measure, and disable it again.
+
+```cpp
+radio.enableRSSI();
+// ... available() latches the reading when a packet arrives
+uint8_t strength = radio.getRSSI();   // 0-15, relative
+radio.disableRSSI();
+```
 
 ### The problem
 
 Register `0x09` is documented — `RSSI_RT` in bits 7:4, `RSSI_SY` in bits 3:0 — but
-it is marked `09*`, *"Special Function Register ... declared in the software design
+marked as a *"special function register ... declared in the software design
 reference"*, a document Panchip never published. It reads `0x00` no matter when you
 sample it.
 
 ### Finding the reference
 
-The full **XN297** (non-L) Chinese datasheet documents the whole mechanism, and a
-copy survives as `XN297_complete.pdf` in
+The full **XN297** (non-L) Chinese datasheet does document it, and a copy survives
+as `XN297_complete.pdf` in
 [foldedtoad/xn297_cal](https://github.com/foldedtoad/xn297_cal):
 
 | location | field | meaning |
 |---|---|---|
-| `RF_SETUP` bit 7 | `RSSI_EN` | `1` = enabled. **Resets to 0** |
-| `RF_SETUP` bit 5 | `RSSI_SEL` | sample through filter or not |
+| `RF_SETUP` bit 7 | `RSSI_EN` | `1` = enabled, **resets to 0** |
+| `RF_SETUP` bit 5 | `RSSI_SEL` | sample through the filter or not |
 | `CONFIG` bit 7 | `DATAOUT_SEL` | selects what `0x09` reports |
 | `RF_CAL` bits 48:47 | `RSSI_GAIN_CTR` | `00` = 0 dB, `01` = −6, `10` = −12, `11` = −18 |
 
@@ -207,97 +302,83 @@ Panchip marks all of it **(测试用)** — *"for test use"*.
 
 ### Why that did not work
 
-Both enable bits were **remapped on the L variant**: `RF_SETUP` bit 7 became the
-top of `RF_DR`, and `CONFIG` bit 7 became `EN_PM`.
+Both enable bits were **reused on the L variant**: `RF_SETUP` bit 7 became the top
+of `RF_DR`, and `CONFIG` bit 7 became `EN_PM`.
 
-Confirmed by experiment. Setting `RF_SETUP` bit 7:
-
-```
-[   1] rx #0   lost=0   seen=1   rssi=00      <- data still arrived
-[   1] NO ACK -- the other board did not receive this one
-```
-
-Data crossed, the auto-ACK stopped, `0x09` stayed at zero. That is `RF_DR` moving
-to `0b10` — **Reserved** in the table — not `RSSI_EN`. Both boards changed together
-so packets still got through, but `RX_ACK_TIME` scales with the data rate, so the
-ACK window broke.
+Confirmed by experiment. With `RF_SETUP` bit 7 set, data still crossed but the
+auto-ACK stopped and `0x09` stayed at zero — that is `RF_DR` moving to the reserved
+`10` code, not `RSSI_EN`. Both boards changed together so packets still got
+through, but the ACK window scales with the data rate, so it broke.
 
 ### Finding it by sweep
 
-The `scan` env flips **one bit at a time** in the undocumented registers `0x19`,
-`0x1B` and `0x1E` — 56 candidates — and watches `0x09`. Single-bit flips rather
-than brute force: seven bytes is 2⁵⁶ combinations, and staying one bit away from
-the factory state is both the more informative search and the safer one.
+A sweep flipped **one bit at a time** in the undocumented registers `0x19`, `0x1B`
+and `0x1E` — 56 candidates — and watched `0x09`. Single bits rather than brute
+force: seven bytes is 2⁵⁶ combinations, and staying one bit from the factory state
+is both the more informative search and the safer one.
 
 **The first sweep produced three false positives.** Its test for "reception still
-works" was only that something reached the RX FIFO — which noise satisfies. The
-bits it flagged break packet validation, after which the chip decodes noise
-continuously and `0x09` fills with garbage:
+works" was only that something reached the RX FIFO — which noise satisfies. The bits
+it flagged break packet validation, after which the chip decodes noise continuously
+and `0x09` fills with garbage:
 
 ```
 [ 34050] rx #572657937    lost=12963   rssi=88
 [ 34051] rx #1145315874   lost=17331   rssi=22
 ```
 
-Adding a magic word to the payload and counting **valid packets separately from
-junk** fixed the test. Two candidates survived, with `junk=0`:
+Putting a magic word in the payload and counting **valid packets separately from
+junk** fixed the test. Two candidates survived, with zero junk:
 
-| bit in `0x1E` | `RSSI_GAIN_CTR` | `0x09` |
+| `RF_CAL` (0x1E) bit | `RSSI_GAIN_CTR` | `0x09` read |
 |---|---|---|
 | 15 | `01` = −6 dB | `0x66` |
 | 16 | `10` = −12 dB | `0x06` |
 
 They are adjacent, and they land exactly where `RSSI_GAIN_CTR` sits in the XN297
-field map — **a position predicted before the sweep ran** — if the L variant's
-24-bit `0x1E` is the top 24 bits of the XN297's 56-bit `RF_CAL`. The readings
-behave like an attenuator: `RSSI_RT` drops from 6 to 0 as the field goes from
-`01` to `10`.
+field map — a position **predicted before the sweep ran** — if the L variant's
+24-bit `RF_CAL` is the top 24 bits of the XN297's 56-bit one. The readings behave
+like an attenuator: `RSSI_RT` drops from 6 to 0 as the field goes from `01` to `10`.
 
-There appears to be **no separate enable on the XN297L**. `RSSI_GAIN_CTR = 00`,
-the reset value, simply means no measurement.
+**Independent confirmation** turned up later in Panchip's own reference
+initialisation, preserved in a PY32 example driver: it writes
+`RF_CAL = F6 3F 5D`, and decoding that sets bit 16 — the same field.
+
+There appears to be **no separate enable** on the XN297L. `RSSI_GAIN_CTR = 00`, the
+reset value, simply means no measurement.
 
 ### Verified
 
-Readings track distance: about **8 touching, 1 in another room**, with `lost=0`
-throughout.
+Readings track distance — about **8 with the boards touching, 1 from another
+room** — with no packet loss.
 
-Use the **low nibble, `RSSI_SY`**, scale 0–15. The high nibble `RSSI_RT` reads 0 in
-practice — it is a real-time measurement and the burst is over before software can
-read the register. `RSSI_SY` is latched at packet sync and holds.
+`getRSSI()` returns the low nibble, `RSSI_SY`. The high nibble `RSSI_RT` reads 0 in
+practice: it is a real-time measurement, and the burst is over before software can
+read the register. `RSSI_SY` is latched at packet sync and holds. In practice the
+readings span **0–8**, so scale bar graphs to 8, not 15. There are a couple of counts
+of noise between packets — average it.
 
-In practice the readings span **0–8**, not 0–15, so bar graphs should scale to 8.
+### The cost, and working around it
 
-### The cost
-
-The field is *"RSSI 的信号增益衰减的选择位"* — **signal gain attenuation** select
-bits. The attenuation is **not confined to the detector**. It costs real receive
-sensitivity, and with it enabled on both ends the link fell apart:
+The field is *"RSSI 的信号增益衰减的选择位"* — *signal gain attenuation* select
+bits — and the attenuation is **not confined to the detector**. With it enabled on
+both ends of a link, retries climbed from 0 to 2–3 and unacknowledged packets stopped
+arriving entirely:
 
 ```
 [   182] ok  retries=2   (no answer)      answers=0/183
-[   185] NO ACK -- the other board did not receive this one
 ```
 
-The forward packet survived because auto-ACK gives it 15 retransmits to absorb the
-loss. The telemetry answer is sent `NOACK` and has no such margin, so it was the
-half that vanished entirely.
+Acknowledged packets survived because auto-ack gives them 15 retransmits to absorb
+the loss. Unacknowledged ones had no such margin.
 
-### The fix: duty-cycle it
+But the attenuation only exists **while the bits are set**, and setting them is one
+register write. So measure a fraction of the packets and run at full sensitivity the
+rest of the time — `enableRSSI()` and `disableRSSI()` are safe to call while
+listening. The **RSSIMeter** example samples one packet in four.
 
-The attenuation only exists **while the bits are set**, and setting them is one SPI
-write. So rather than choosing which board pays, both boards arm RSSI for one round
-in `RSSI_SAMPLE_EVERY` (default 4) and run at full sensitivity the rest of the time.
-Both directions get measured, the link spends three rounds in four with nothing in
-its way, and each side carries its last reading forward so the display stays steady.
-
-```c
-static const int      RSSI_GAIN         = 1;   // 0 off, 1 -6dB, 2 -12dB, 3 -18dB
-static const uint32_t RSSI_SAMPLE_EVERY = 4;
-```
-
-**Treat the number as relative.** It is a 4-bit test-mode reading with ±2 counts of
-noise; average it. It is good for comparing antennas or placements, not for
-absolute dBm.
+Treat the number as a relative, test-mode reading: good for comparing antennas or
+placements, not for absolute dBm.
 
 ---
 
@@ -305,179 +386,102 @@ absolute dBm.
 
 Two metrics that are documented, free, and cost no sensitivity:
 
-- **`retries`** — `ARC_CNT` from `OBSERVE_TX`. How many retransmits the packet
-  needed. `0` is a clean link.
-- **`lost`** — gaps in the counter sequence at the receiver. Packets that never
-  arrived at all.
+- **`getARC()`** — retransmits the last `write()` needed. `0` is a clean link.
+- **Counter gaps** — number your packets and count the ones that never arrive.
 
 These are the ones to build on for anything long-running.
 
-The protocol reflects this split. The forward packet is **ACKed**, so the initiator
-learns `retries`. The telemetry answer is deliberately **not** ACKed
-(`W_TX_PAYLOAD_NOACK`, which needs `ACTIVATE 0x50 0x73` and `EN_NOACK` in
-`FEATURE`): it is pure telemetry riding on an exchange the peer already
-acknowledged. Demanding an ACK for it produced 15 pointless retransmits per round
-into a board that had already stopped listening.
+---
+
+## Verification status
+
+| | |
+|---|---|
+| Reset, power states, `begin()`, `isChipConnected()` | ✅ hardware — ESP32, ESP32-C3 |
+| Auto-ack `write()`, retries, `getARC()` | ✅ hardware |
+| NOACK `write(buf, len, true)` | ✅ hardware |
+| 32-byte static payloads | ✅ hardware |
+| RSSI | ✅ hardware |
+| Channel, power levels, 1 Mbps | ✅ hardware |
+| Multiple pipes, dynamic payloads, ACK payloads | implemented per datasheet — examples provided, not yet run |
+| 2 Mbps, 250 kbps | implemented per datasheet, not yet run |
+| AVR, RP2040, STM32 | compile-tested in CI, not yet run |
+
+Run one of the unverified examples on your hardware? Open an issue with the result
+either way.
 
 ---
 
-## The 0.42" OLED
+## Example project: ESP32-C3 dashboard
 
-The 72×40 panel on the ESP32-C3 boards needed **three separate corrections**, all
-symptoms of one fact: **this panel is cut differently from what U8g2's device table
-assumes.**
+[`extras/ESP32C3_Dashboard`](extras/ESP32C3_Dashboard) is the PlatformIO project
+this library grew out of: an ESP32-C3 SuperMini transmitter reporting its battery
+and temperature to an ESP32-C3 receiver with a built-in 0.42" OLED. It builds
+against the library in this repository.
 
-### Two things that bite everyone
+```
+cd extras/ESP32C3_Dashboard
+pio run -e tx_c3 -t upload
+pio run -e rx_c3 -t upload
+```
 
-1. It is a **72×40 window inside a 128×64 SSD1306**, offset `(28,24)`. Drive it as
-   a plain 128×64 and the image lands off-screen. U8g2 has a device entry for the
-   part, so use it.
-2. U8g2's **hardware-I²C path calls `Wire.begin()` with no arguments**, which picks
-   the chip's default SDA/SCL rather than the board's. Use the software-I²C
-   constructor with explicit pins — the panel is 360 bytes, speed is irrelevant.
+The BOOT button cycles six pages — overview, temperature, battery, signal, stats, and
+an auto-scaled temperature graph. The project also carries the `scan` environment
+that found the RSSI enable, in case another chip revision needs it found again.
 
-### The three corrections
+Some things learned along the way that apply beyond this project:
+
+**The 0.42" 72×40 OLED** is cut differently from U8g2's device table, in both axes:
 
 | symptom | cause | fix |
 |---|---|---|
-| first character clipped on the left | window starts 2 columns later than U8g2 assumes | `OLED_X = 2`, shifts drawing |
-| dirty stripe down the right edge | 2 visible columns lie **outside** the 72-column buffer, so U8g2 never writes them and they keep power-on garbage | zero the whole 128×64 GDDRAM once at boot |
-| clipped at the bottom, space at the top | window starts on a different COM row | `0xD3` display offset = **12** |
+| first character clipped on the left | window starts 2 columns later than U8g2 assumes | shift drawing 2 px |
+| dirty stripe down the right edge | 2 visible columns lie outside U8g2's 72-column buffer, so they keep power-on garbage | zero the controller RAM once at boot |
+| clipped at the bottom, space at the top | window starts on a different COM row | SSD1306 `0xD3` display offset = 12 |
 
-The vertical one is the interesting case: it **cannot** be fixed by moving the
-drawing. The buffer is 40 rows and the content already starts at row 0 — there is
-nothing above to move into. SSD1306 register `0xD3` moves *the window itself*,
-which is the only knob that works.
+The vertical one cannot be fixed by moving the drawing — the buffer is 40 rows and
+content already starts at row 0. Register `0xD3` moves the window itself. U8g2's
+hardware-I²C path also calls `Wire.begin()` with no arguments, which picks the
+chip's default pins rather than the board's; use the software-I²C constructor. And do
+not borrow pre-charge (`0xD9`) or VCOMH (`0xDB`) values from generic 128×64 init
+sequences — they blanked this panel.
 
-`OLED_CALIBRATE = true` runs a sweep for a different panel: it draws a frame around
-the whole buffer and steps `0xD3` from 0 to 32 with the value in large digits.
-Whichever value sits flush against all four edges is the answer.
+**ESP32-C3 battery sense** — a 1:2 divider (100 k / 100 k + 100 nF) on `GPIO0`. The
+C3's ADC is linear only to about 2.5 V, unlike the original ESP32, and `GPIO2` — the
+other free ADC1 channel — is a boot strapping pin a divider can hold on its
+threshold. Sample between transmissions: a 66 mA burst reads as a flat cell.
 
-### Brightness
-
-`oled.setContrast(255)` is the safe, documented lever.
-
-**Do not** copy pre-charge (`0xD9`) and VCOMH (`0xDB`) values out of generic 128×64
-init sequences. U8g2 tunes those for this specific glass during `begin()`;
-overriding them blanked the panel here — both with an out-of-range VCOMH and with a
-legal one. That path is left in the code behind `OLED_TUNE_ANALOG`, defaulting off,
-with a note saying it failed.
-
-Everything is volatile, so a power cycle recovers from any of it.
-
-These 0.42" panels are simply dim — 72×40 pixels at 1/40 duty on a tiny glass. If
-brightness matters, a 0.91" or 1.3" SSD1306 uses the same I²C interface and this
-code with only the device constant and offsets changed.
+**ESP32-C3 temperature** is the die, not the room — useful for trends only. The
+original ESP32 has no usable sensor at all.
 
 ---
 
-## Display pages
+## Roadmap
 
-The **BOOT button (GPIO9)** cycles five pages. It is polled every pass of `loop()`,
-so the page turns under your thumb rather than waiting for the next packet.
-
-| page | content |
-|---|---|
-| `OVERVIEW` | counter, peer temperature centred, signal bar, both RSSI values, link state |
-| `TEMP` | transmitter's temperature in large digits |
-| `BATT` | transmitter's cell voltage, percentage, battery gauge |
-| `SIGNAL` | RSSI large, running mean, wide bar |
-| `STATS` | seen / lost / uptime |
-| `GRAPH` | temperature trace, last 68 samples, auto-scaled |
-
-The graph auto-scales to the range actually present — on a die that drifts a degree
-over minutes, a fixed scale draws a flat line and says nothing. The number in the
-top right is the span the trace covers.
-
-Holding BOOT **through a reset** drops the C3 into download mode. That is the
-button doing its original job, not a fault.
-
-### Battery sense on the initiator
-
-A single Li-ion cell through a 1:2 divider into `GPIO0` (ADC1_CH0):
-
-```
-BAT+ ---[ R1 100k ]---+--- GPIO0
-                      |
-                      +---[ R2 100k ]--- GND
-                      |
-                      +---[ 100nF ]----- GND
-```
-
-**Why these values.** The C3's ADC is linear only to about **2.5 V** — unlike the
-original ESP32, which reaches ~3.1 V — so a full 4.2 V cell has to land at 2.10 V.
-That is what 1:2 is for, and it leaves 0.4 V of headroom while still using 60% of
-the range. Drain is 21 µA, negligible beside the C3 itself.
-
-The **100 nF is not optional**: the ADC samples through an internal capacitor, and
-a 50 kΩ source cannot charge it in the sampling window. Without it, readings come
-out low and noisy.
-
-**Why `GPIO0`.** ADC1 on the C3 is GPIO0–4 only (ADC2 is unusable). `1`, `3` and
-`4` carry `CE`/`MISO`/`CLK`. That leaves `GPIO0` and `GPIO2` — and `GPIO2` is a
-**boot strapping pin**, where a divider parking it near 2.1 V sits right on the VIH
-threshold and makes booting intermittent. `GPIO0` is nominally `IRQ` in the shared
-pin map, but nothing uses it: the driver polls. On the initiator, leave `IRQ`
-unconnected and the pin is free.
-
-**Calibration.** `BATT_CAL` in [`src/main.cpp`](src/main.cpp) trims out resistor
-tolerance and residual ADC error:
-
-1. read the cell with a multimeter
-2. read what the board reports
-3. `BATT_CAL = multimeter / reported`
-
-**Sampling.** The reading is taken at the top of `loop()`, after the inter-packet
-delay, while the radio is idle. Measuring during a transmit catches the 66 mA burst
-pulling the rail down and reports a flat cell.
-
-Percentage comes from an open-circuit Li-ion curve. Voltage alone sags under load
-and recovers at rest, so treat it as an indication, not a fuel gauge — and note
-that a SuperMini's LDO needs roughly 3.4 V in to hold 3.3 V out, so it falls out of
-regulation before the cell is genuinely empty.
-
-### Temperature
-
-The ESP32-C3 has a usable on-chip temperature sensor; the original ESP32 does not.
-Boards without one send a sentinel and the display shows `--` rather than a number
-that would look like a measurement.
-
-It reads **die temperature, not ambient** — expect it to sit above room temperature
-by an amount that moves with CPU load. Good for trends and for chip thermal
-monitoring; not a substitute for a real sensor.
-
----
-
-## Project layout
-
-```
-src/
-  xn297l.h      driver: register map, SPI commands, API
-  xn297l.cpp    driver implementation
-  main.cpp      all roles, selected by build flag
-platformio.ini  five environments
-README.he.md    Hebrew version of this document
-```
-
-The driver is deliberately minimal — fixed 32-byte payloads, one pipe, auto-ack on.
-It is a bring-up driver meant to prove hardware works and then grow into a sensor
-link. Natural next steps are marked in the code: dynamic payload length, using the
-`IRQ` pin instead of polling, and pipes 1–5 for multiple transmitters.
+- 64-byte payloads (`FEATURE.DATA_LEN_SEL`)
+- Software CE over SPI (`CE_FSPI_ON/OFF`), freeing a GPIO
+- An interrupt-driven example
+- A/B test of Panchip's reference calibration values against the power-on defaults
+- The 3-wire XN297LBW (SOP8), which shares one data line for MOSI and MISO
 
 ---
 
 ## Sources
 
+- **Panchip XN297L Technology Reference Manual** —
+  [v5.2, Sep 2022](https://www.panchip.com/static/upload/file/20221014/1665726592628185.pdf),
+  the newest; it adds nothing about RSSI.
 - [foldedtoad/xn297_cal](https://github.com/foldedtoad/xn297_cal) — carries
-  `XN297_complete.pdf`, the full Chinese XN297 datasheet, plus bit-field maps for
-  `BB_CAL` / `RF_CAL` / `DEMOD_CAL`. The key to the RSSI mechanism.
-- [XN297L Technology Reference Manual v5.2, Sep 2022](https://www.panchip.com/static/upload/file/20221014/1665726592628185.pdf)
-  — the newest official document. Checked: it adds nothing about RSSI.
+  `XN297_complete.pdf`, the full Chinese XN297 datasheet, plus bit-field maps for the
+  calibration registers. The key to the RSSI mechanism.
+- [IOsetting/py32f0-template](https://github.com/IOsetting/py32f0-template) —
+  an XN297L driver for PY32 that preserves Panchip's reference calibration values.
+- [nRF24/RF24](https://github.com/nRF24/RF24) — the API this library follows.
 - [Deviation forum — WLtoys Q242G](https://www.deviationtx.com/forum/protocol-development/5290-wltoys-q242g)
-  — first mention of `DATAOUT_SEL` and register `0x09`.
+  — early discussion of register `0x09`.
 
 ---
 
 ## License
 
-MIT. The datasheet findings are facts about someone else's silicon — use them.
+MIT. The register findings are facts about someone else's silicon — use them.
