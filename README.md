@@ -151,7 +151,7 @@ to use interrupts (`maskIRQ()` and `whatHappened()` are there for that).
 [`extras/ExampleRunner`](extras/ExampleRunner/platformio.ini) points PlatformIO's
 source directory at an example and builds it against this repository. It has
 environments for ESP32, ESP32-C3, Uno and the 32 KB STM32F030K6 -- every example
-fits on that one, at 17.7 to 25.0 KB.
+fits on that one, at 17.7 to 25.1 KB.
 
 ---
 
@@ -486,18 +486,19 @@ pio run -e tx_stm32 -t upload      # sensor board, over ST-Link
 ```
 
 It is the proof that the library fits a small part: the whole sender — sensor,
-filter, battery ADC and radio, register dump included — is 30.7 KB of the
-STM32F030K6's 32 KB. That is on PlatformIO's `ststm32` 19.4.0, which the project
-pins: the STM32duino 3.0 core in 20.0.0 adds about 5.8 KB, and the sender stops
-fitting. Two things make the budget work at all, and both carry over to other
-projects:
+filter, battery ADC and radio, register dump included — is 30.8 KB of the
+STM32F030K6's 32 KB. That is on PlatformIO's `ststm32` 19.7.1 (STM32duino 2.12),
+which the project pins. The STM32duino 3.0 core in 20.0.0 adds about 5.8 KB, and
+there the sender only fits with LTO on top of the flag below -- 29.9 KB, but not
+yet run on hardware. Two things make the budget work at all, and both carry over
+to other projects:
 
 - `analogRead()` drags in about 2.9 KB of HAL. Driving the ADC through its
   registers does the same job in roughly 500 bytes, and reading VREFINT alongside
   the divider references the battery to the real VDDA instead of an assumed 3.3 V —
   which matters exactly when the cell is low and the regulator starts to drop out.
 - `-DXN297L_NO_DETAILS` hands back the register dump's 1.2 KB when the last of
-  the flash counts -- 30.7 KB drops to 29.5 KB.
+  the flash counts -- 30.8 KB drops to 29.5 KB.
 
 The packet's first 16 bytes are laid out like the dashboard's, so each receiver can
 read the other project's sender and ignore what it does not know.

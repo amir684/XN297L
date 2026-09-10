@@ -181,12 +181,14 @@ Current sizes:
 
 | Env | Flash | RAM |
 | --- | --- | --- |
-| tx_stm32 | 30708 of 32768 | 1464 of 4096 |
+| tx_stm32 | 30760 of 32768 | 1464 of 4096 |
 | rx_c3 | 290734 of 1310720 | 15124 |
 
-Measured on PlatformIO's `ststm32` 19.4.0, which `platformio.ini` pins for the
-sender. The STM32duino 3.0 core that 20.0.0 brings adds about 5.8 KB, and the
-sender no longer fits.
+Measured on PlatformIO's `ststm32` 19.7.1 (STM32duino 2.12), which
+`platformio.ini` pins for the sender. The STM32duino 3.0 core that 20.0.0 brings
+adds about 5.8 KB: the sender overflows by 3.8 KB as it is, and still by 2.5 KB
+with `XN297L_NO_DETAILS`. Adding `-flto` as well brings it to 29,880 bytes, but
+that build has not been run on hardware.
 
 ## What the sender does
 
