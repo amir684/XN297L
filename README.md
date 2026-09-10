@@ -24,6 +24,14 @@ Everything here was measured, and the dead ends are documented alongside the
 results — knowing what was already ruled out is most of the value when a chip has
 no real documentation.
 
+<p align="center">
+  <img src="images/imu-link-bench.jpg" width="720"
+       alt="A toy-drone board with an XN297L module sending attitude data to an ESP32-C3 with a 0.42 inch OLED showing an artificial horizon">
+  <br>
+  <sub>The <a href="#stm32f030-imu-link">IMU link</a> from the demo project: a toy-drone board
+  sends roll and pitch, and an ESP32-C3 on a salvaged XN297L module draws the horizon.</sub>
+</p>
+
 ---
 
 ## Contents
@@ -415,13 +423,14 @@ These are the ones to build on for anything long-running.
 | 32-byte static payloads | ✅ hardware |
 | RSSI | ✅ hardware |
 | Channel, power levels, 1 Mbps | ✅ hardware |
-| Multiple pipes, dynamic payloads, ACK payloads | implemented per datasheet — examples provided, not yet run |
+| Multiple pipes, dynamic payloads, ACK payloads | ✅ hardware — the examples, on ESP32 |
+| Every env in the demo project, built against this library | ✅ hardware |
+| Auto-ack stream on a 32 KB STM32F030K6 | ✅ hardware — the IMU link |
 | 2 Mbps, 250 kbps | implemented per datasheet, not yet run |
-| Auto-ack stream on a 32 KB STM32F030K6 | ✅ hardware — the IMU link project |
 | AVR, RP2040, STM32F103 | compile-tested in CI, not yet run |
 
-Run one of the unverified examples on your hardware? Open an issue with the result
-either way.
+Run the library on one of the boards that has not been run yet? Open an issue with
+the result either way.
 
 ---
 
@@ -489,6 +498,21 @@ filter, measures its own battery, and sends ten auto-acked packets a second to a
 ESP32-C3 with the 0.42" OLED, which cycles eight pages from an artificial horizon
 to a link-quality view. By [r-d-PB](https://github.com/r-d-PB), MIT licensed and
 included with thanks.
+
+<p align="center">
+  <img src="images/imu-sender-drone-board.jpg" width="560"
+       alt="Toy-drone flight controller board with an XN297L module soldered on top, wired for flashing">
+  <br>
+  <sub>The sender: a toy-drone flight controller — STM32F030K6T6, MPU6881 and an XN297L module.</sub>
+</p>
+
+<p align="center">
+  <img src="images/imu-rx-accel.jpg" width="32%" alt="OLED page ACCEL: X +0.10, Y -0.16, Z +0.99 g">
+  <img src="images/imu-rx-temp.jpg" width="32%" alt="OLED page MPU TEMP: 36.3 degrees C">
+  <img src="images/imu-rx-battery.jpg" width="32%" alt="OLED page TX BATT: 3.41 V with a battery bar">
+  <br>
+  <sub>Three of the receiver's eight pages: accelerometer, the MPU's die temperature, and the sender's battery.</sub>
+</p>
 
 ```
 cd extras/XN297L_Demo

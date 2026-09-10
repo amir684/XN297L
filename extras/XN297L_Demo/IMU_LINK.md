@@ -30,6 +30,11 @@ at a time.
 The whole sender fits in 32 KB of flash with room to spare, which is most of
 what shapes the design decisions below.
 
+<p align="center">
+  <img src="../../images/imu-link-bench.jpg" width="640"
+       alt="The sender board and the ESP32-C3 receiver showing the artificial horizon">
+</p>
+
 ## Why this is interesting
 
 - **The XN297L is not an nRF24L01**, however much its register map looks like
@@ -78,6 +83,13 @@ reference/main_sensor_only.cpp the original sketch, sensor to serial, no radio
 | ESP32-C3 0.42" OLED board | 01Space ESP32-C3-0.42LCD and clones |
 | ST-Link | to flash the STM32 |
 | USB-TTL adapter | to read the STM32's serial output |
+
+<p align="center">
+  <img src="../../images/imu-sender-drone-board.jpg" width="560"
+       alt="Toy-drone flight controller board with an XN297L module soldered on top">
+  <br>
+  <sub>The sender, on a toy-drone flight controller.</sub>
+</p>
 
 ## Wiring
 
@@ -220,6 +232,12 @@ The BOOT button cycles the pages:
 | BATT | cell voltage, rough state of charge, and a battery icon |
 | GRAPH | that temperature over the last 68 packets, auto-scaled |
 | LINK | signal bar, packet rate, packets seen and lost, retransmits, uptime |
+
+<p align="center">
+  <img src="../../images/imu-rx-accel.jpg" width="32%" alt="ACCEL page">
+  <img src="../../images/imu-rx-temp.jpg" width="32%" alt="TEMP page">
+  <img src="../../images/imu-rx-battery.jpg" width="32%" alt="BATT page">
+</p>
 
 Redrawing the panel over software I2C takes tens of milliseconds, so the screen
 refreshes ten times a second at most and only when something changed.
