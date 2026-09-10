@@ -496,8 +496,7 @@ An **STM32F030K6T6**
 reads an **MPU6881** over software I²C, fuses roll and pitch with a complementary
 filter, measures its own battery, and sends ten auto-acked packets a second to an
 ESP32-C3 with the 0.42" OLED, which cycles eight pages from an artificial horizon
-to a link-quality view. By [r-d-PB](https://github.com/r-d-PB), MIT licensed and
-included with thanks.
+to a link-quality view.
 
 <p align="center">
   <img src="images/imu-sender-drone-board.jpg" width="560"

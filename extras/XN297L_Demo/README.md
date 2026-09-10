@@ -24,5 +24,4 @@ pio run -e rx_c3 -t upload --upload-port COM6
 
 Wiring, and what was learned building all of this, is in the
 [library README](../../README.md). The IMU link has its own write-up in
-[IMU_LINK.md](IMU_LINK.md); its code is MIT licensed by r-d-PB, see
-[IMU_LINK_LICENSE](IMU_LINK_LICENSE).
+[IMU_LINK.md](IMU_LINK.md).

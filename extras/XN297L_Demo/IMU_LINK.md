@@ -1,10 +1,9 @@
 # Wireless IMU link: STM32F030 + MPU6881 -> XN297L -> ESP32-C3 OLED
 
-> Part of the [XN297L library](../../README.md)'s demo project. It began as a
-> standalone project (MIT, copyright r-d-PB -- see [IMU_LINK_LICENSE](IMU_LINK_LICENSE))
-> with its own copy of the radio driver; here the same firmware builds against
-> the library in the root of this repository, as the `imu_tx_stm32` and
-> `imu_rx_c3` envs. Run the commands below from `extras/XN297L_Demo`.
+> Part of the [XN297L library](../../README.md)'s demo project. The firmware
+> builds against the library in the root of this repository, as the
+> `imu_tx_stm32` and `imu_rx_c3` envs. Run the commands below from
+> `extras/XN297L_Demo`.
 
 A 2.4 GHz telemetry link built out of two very small boards.
 
@@ -44,21 +43,14 @@ what shapes the design decisions below.
   will not key up without it.
 - **The radio's RSSI is undocumented.** Panchip's XN297L manual lists register
   0x09 and then defers to a software reference that was never published. The
-  library's `enableRSSI()` writes the bits that were found empirically in the
-  upstream project, and the receiver's signal bar reads them.
+  library's `enableRSSI()` writes the bits that were found empirically -- the
+  story is in the library README -- and the receiver's signal bar reads them.
 - **Everything is sized for a 32 KB part.** `analogRead()` was the obvious way
   to read the battery and it cost 2.9 KB, so the ADC is driven through its
   registers instead, in about 500 bytes. That story is in the comments.
 - **The packet is backwards compatible.** Its first 16 bytes are byte-for-byte
-  the upstream demo's `LinkPacket`, so that project's stock receiver still
+  the dashboard's `LinkPacket`, so the dashboard receiver (`rx_c3`) still
   decodes these packets and simply ignores the sensor half.
-
-## Credits
-
-The radio driver, the receiver's display plumbing and the RSSI discovery come
-from [amir684/XN297L](https://github.com/amir684/XN297L). That is where the
-XN297L's departures from the nRF24L01 were worked out, and where this panel's
-72x40 geometry was measured rather than guessed.
 
 ## Layout
 
@@ -134,8 +126,8 @@ rather use the peripheral.
 | OLED SDA / SCL | 5 / 6, on board |
 | page button | 9, the BOOT button |
 
-Identical to the upstream repo's C3 pin map, so one jumper harness fits both
-projects.
+Identical to the dashboard receiver's (`rx_c3`) pin map, so one jumper harness
+fits both.
 
 ### Battery sense
 
@@ -296,5 +288,4 @@ is the cheapest 1.2 KB to give back: uncomment `-D XN297L_NO_DETAILS` in
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The XN297L driver and the receiver's display code
-derive from [amir684/XN297L](https://github.com/amir684/XN297L).
+MIT, see the library's [LICENSE](../../LICENSE).
