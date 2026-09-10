@@ -182,7 +182,11 @@ public:
   void flush_tx();
   void maskIRQ(bool tx_ok, bool tx_fail, bool rx_ready);
   void whatHappened(bool &tx_ok, bool &tx_fail, bool &rx_ready);
+#ifndef XN297L_NO_DETAILS
+  // Dumps every register. On a 32 KB part the strings are worth reclaiming:
+  // build with -DXN297L_NO_DETAILS to compile it out.
   void printDetails(Stream &out = Serial);
+#endif
 
   // ---- XN297L only ----------------------------------------------------------
 
@@ -212,8 +216,10 @@ private:
   uint8_t command(uint8_t cmd);
   uint8_t command(uint8_t cmd, uint8_t data);
   void setRSSIControl(uint8_t code);
+#ifndef XN297L_NO_DETAILS
   void printRow(Stream &out, const __FlashStringHelper *name, uint8_t reg,
                 uint8_t len);
+#endif
 
   uint16_t _cePin;
   uint16_t _csnPin;

@@ -46,10 +46,12 @@
 // so this is where to look when a link works at one data rate and not another.
 static const uint8_t XN_BB_CAL_DEFAULT[5] = {0x0A, 0x6D, 0x67, 0x9C, 0x46};
 
+#ifndef XN297L_NO_DETAILS
 static void printHex(Stream &out, uint8_t v) {
   if (v < 0x10) out.print('0');
   out.print(v, HEX);
 }
+#endif
 
 XN297L::XN297L(uint16_t cePin, uint16_t csnPin)
     : _cePin(cePin),
@@ -670,6 +672,10 @@ void XN297L::disableRSSI() { setRSSIControl(XN297L_RSSI_OFF); }
 uint8_t XN297L::getRSSI() { return _lastRssi & 0x0F; }
 
 // ---- diagnostics ------------------------------------------------------------
+// Compiled out by -DXN297L_NO_DETAILS, for parts where the register names are
+// a meaningful share of the flash.
+#ifndef XN297L_NO_DETAILS
+
 
 void XN297L::printRow(Stream &out, const __FlashStringHelper *name, uint8_t reg,
                       uint8_t len) {
@@ -738,3 +744,5 @@ void XN297L::printDetails(Stream &out) {
   out.println();
   out.println(F("--------------"));
 }
+
+#endif  // XN297L_NO_DETAILS

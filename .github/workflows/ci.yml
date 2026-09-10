@@ -60,13 +60,17 @@ jobs:
             - examples
           enable-warnings-report: true
 
-  dashboard:
-    name: build / ESP32C3_Dashboard
+  extras:
+    name: build / ${{ matrix.project }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [ESP32C3_Dashboard, STM32F030_IMU_Link]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
       - run: pip install platformio
-      - run: pio run -d extras/ESP32C3_Dashboard
+      - run: pio run -d extras/${{ matrix.project }}

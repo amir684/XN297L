@@ -18,7 +18,7 @@ desoldered from a 2015 toy drone.
   sweep, cross-checked against Panchip's own init code, and verified against
   distance.
 - **Portable.** ESP32, ESP32-C3, AVR, RP2040 and STM32, compile-tested in CI on
-  every push.
+  every push -- and small enough for a 32 KB STM32F030.
 
 Everything here was measured, and the dead ends are documented alongside the
 results — knowing what was already ruled out is most of the value when a chip has
@@ -38,6 +38,7 @@ no real documentation.
 - [Link quality without RSSI](#link-quality-without-rssi)
 - [Verification status](#verification-status)
 - [Example project: ESP32-C3 dashboard](#example-project-esp32-c3-dashboard)
+- [Example project: STM32F030 IMU link](#example-project-stm32f030-imu-link)
 - [Roadmap](#roadmap)
 - [Sources](#sources)
 
@@ -102,15 +103,15 @@ Both sides have to agree on the payload size — 32 bytes unless you call
 
 ## Wiring
 
-| XN297L | ESP32 | ESP32-C3 | Pico | Blue Pill | Uno / Nano ¹ |
+| XN297L | ESP32 | ESP32-C3 | Pico | STM32 ³ | Uno / Nano ¹ |
 |---|---|---|---|---|---|
 | `3V3` | 3V3 | 3V3 | 3V3 | 3V3 | **separate 3.3 V regulator** |
 | `GND` | GND | GND | GND | GND | GND |
 | `CLK` | 18 | 4 | GP18 | PA5 | 13 |
 | `MISO` | 19 | 5 ² | GP16 | PA6 | 12 |
 | `MOSI` | 23 | 6 ² | GP19 | PA7 | 11 |
-| `CSN` | 5 | 7 | GP17 | PA4 | 10 |
-| `CE` | 4 | 1 | GP20 | PB0 | 9 |
+| `CSN` | 5 | 7 | GP17 | PB0 | 10 |
+| `CE` | 4 | 1 | GP20 | PA4 | 9 |
 | `IRQ` | optional | optional | optional | optional | optional |
 
 CE and CSN are free choices; the rest are each board's default SPI pins.
@@ -123,6 +124,9 @@ supply the transmit current (up to 66 mA at 11 dBm), so the module needs **its o
 ² ESP32-C3 boards with a built-in 0.42" OLED use GPIO 5 and 6 for the display. Pick
 other pins and pass them to `SPI.begin(sck, miso, mosi)` before `radio.begin()` —
 see the dashboard project.
+
+³ STM32F030K6 or F103 Blue Pill, on SPI1. CE on PA4 and CSN on PB0 are the IMU link
+board's wiring, which has run on hardware.
 
 **Supply.** The XN297L runs on 2.2–3.3 V. Put **10 µF across the module's 3V3 and
 GND**, close to the pads. Supply sag during transmit bursts is the single most
@@ -145,7 +149,9 @@ to use interrupts (`maskIRQ()` and `whatHappened()` are there for that).
 
 **PlatformIO users** can build any example without copying it anywhere:
 [`extras/ExampleRunner`](extras/ExampleRunner/platformio.ini) points PlatformIO's
-source directory at an example and builds it against this repository.
+source directory at an example and builds it against this repository. It has
+environments for ESP32, ESP32-C3, Uno and the 32 KB STM32F030K6 -- every example
+fits on that one, at 17.7 to 25.0 KB.
 
 ---
 
@@ -197,6 +203,9 @@ pipe 0 handling: `openWritingPipe()` borrows pipe 0 to receive ACKs,
 | `getRSSI()` | 0–15, latched by `available()` |
 | `readRegister()` / `writeRegister()` | single byte or multi-byte |
 | `getStatus()` | |
+
+**Build option:** `-DXN297L_NO_DETAILS` compiles out `printDetails()` and its
+register names -- 1.2 KB back on an STM32F030, where that is 4% of the flash.
 
 ### Output power
 
@@ -401,7 +410,7 @@ These are the ones to build on for anything long-running.
 
 | | |
 |---|---|
-| Reset, power states, `begin()`, `isChipConnected()` | ✅ hardware — ESP32, ESP32-C3 |
+| Reset, power states, `begin()`, `isChipConnected()` | ✅ hardware — ESP32, ESP32-C3, STM32F030K6 |
 | Auto-ack `write()`, retries, `getARC()` | ✅ hardware |
 | NOACK `write(buf, len, true)` | ✅ hardware |
 | 32-byte static payloads | ✅ hardware |
@@ -409,7 +418,8 @@ These are the ones to build on for anything long-running.
 | Channel, power levels, 1 Mbps | ✅ hardware |
 | Multiple pipes, dynamic payloads, ACK payloads | implemented per datasheet — examples provided, not yet run |
 | 2 Mbps, 250 kbps | implemented per datasheet, not yet run |
-| AVR, RP2040, STM32 | compile-tested in CI, not yet run |
+| Auto-ack stream on a 32 KB STM32F030K6 | ✅ hardware — the IMU link project |
+| AVR, RP2040, STM32F103 | compile-tested in CI, not yet run |
 
 Run one of the unverified examples on your hardware? Open an issue with the result
 either way.
@@ -457,6 +467,38 @@ threshold. Sample between transmissions: a 66 mA burst reads as a flat cell.
 
 **ESP32-C3 temperature** is the die, not the room — useful for trends only. The
 original ESP32 has no usable sensor at all.
+
+---
+
+## Example project: STM32F030 IMU link
+
+[`extras/STM32F030_IMU_Link`](extras/STM32F030_IMU_Link) — an **STM32F030K6T6**
+reads an **MPU6881** over software I²C, fuses roll and pitch with a complementary
+filter, measures its own battery, and sends ten auto-acked packets a second to an
+ESP32-C3 with the 0.42" OLED, which cycles eight pages from an artificial horizon
+to a link-quality view. By [r-d-PB](https://github.com/r-d-PB), MIT licensed and
+included with thanks.
+
+```
+cd extras/STM32F030_IMU_Link
+pio run -e rx_c3    -t upload      # display board, over USB
+pio run -e tx_stm32 -t upload      # sensor board, over ST-Link
+```
+
+It is the proof that the library fits a small part: the whole sender — sensor,
+filter, battery ADC and radio, register dump included — is 30.7 KB of the
+STM32F030K6's 32 KB. Two things make that possible, and both carry over to other
+projects:
+
+- `analogRead()` drags in about 2.9 KB of HAL. Driving the ADC through its
+  registers does the same job in roughly 500 bytes, and reading VREFINT alongside
+  the divider references the battery to the real VDDA instead of an assumed 3.3 V —
+  which matters exactly when the cell is low and the regulator starts to drop out.
+- `-DXN297L_NO_DETAILS` hands back the register dump's 1.2 KB when the last of
+  the flash counts -- 30.7 KB drops to 29.5 KB.
+
+The packet's first 16 bytes are laid out like the dashboard's, so each receiver can
+read the other project's sender and ignore what it does not know.
 
 ---
 

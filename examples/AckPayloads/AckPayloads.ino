@@ -20,7 +20,7 @@ const uint16_t PIN_CE = 4, PIN_CSN = 5;      // SPI: SCK 18, MISO 19, MOSI 23
 #elif defined(ARDUINO_ARCH_RP2040)
 const uint16_t PIN_CE = 20, PIN_CSN = 17;    // SPI0: SCK 18, MISO 16, MOSI 19
 #elif defined(ARDUINO_ARCH_STM32)
-const uint16_t PIN_CE = PB0, PIN_CSN = PA4;  // SPI1: SCK PA5, MISO PA6, MOSI PA7
+const uint16_t PIN_CE = PA4, PIN_CSN = PB0;  // SPI1: SCK PA5, MISO PA6, MOSI PA7
 #else
 const uint16_t PIN_CE = 9, PIN_CSN = 10;     // AVR: SCK 13, MISO 12, MOSI 11
 #endif
